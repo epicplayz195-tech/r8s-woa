@@ -42,7 +42,9 @@ foreach ($lun in "sda","sdb","sdc","sdd","sde","sdf") {
     Set-Content -Path (Join-Path $dest "gpt_$lun.txt") -Value $table
 }
 
-Get-ChildItem $dest -File | Get-FileHash -Algorithm SHA256 |
+# Collect the file list first, so SHA256SUMS isn't hashed while it's being written.
+$files = @(Get-ChildItem $dest -File | Where-Object Name -ne "SHA256SUMS")
+$files | Get-FileHash -Algorithm SHA256 |
     ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
     Set-Content (Join-Path $dest "SHA256SUMS")
 
