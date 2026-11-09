@@ -40,9 +40,10 @@ Details and the things to verify on hardware: [docs/porting-notes.md](docs/porti
 |---|---|
 | `firmware/overlay/` | Files copied over a Mu-Silicium checkout (r8sPkg + Silicium-ACPI) |
 | `firmware/tools/build.sh` | Clone Mu-Silicium, apply overlay, build `Mu-r8s.img` (Linux/WSL/CI) |
-| `firmware/tools/build.ps1` | Same, natively on Windows (defaults to `D:\r8s-woa`) |
-| `.github/workflows/build-uefi.yml` | GitHub Actions build, uploads `Mu-r8s.img` as an artifact |
+| `firmware/tools/build.ps1` | Same, natively on Windows (defaults to `D:\woa`) |
+| `.github/workflows/build-uefi.yml` | GitHub Actions build: `Mu-r8s.img` + an Odin tar (AP) |
 | `tools/device/` | PowerShell + adb scripts run against TWRP: backup, erase `uh`, partition, flash UEFI |
+| `tools/windows/Build-WinPE.ps1` | Make ARM64 WinPE media from a 23H2 ISO (or the ADK) |
 | `tools/windows/Deploy-Windows.ps1` | Apply Windows/WinPE over UEFI Mass Storage |
 | `drivers/` | Windows driver work for Exynos 990 (plans + hardware tables, no code yet) |
 | `docs/` | Install guide, porting notes, driver plan |

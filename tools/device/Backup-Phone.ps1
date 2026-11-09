@@ -9,7 +9,7 @@
   manifest. Keep these files: they are how you restore IMEI, Android and
   the original partition table.
 #>
-param([string]$OutDir = "D:\r8s-woa\backups")
+param([string]$OutDir = "D:\woa\backups")
 . "$PSScriptRoot\Common.ps1"
 
 $bl = Assert-R8sInRecovery

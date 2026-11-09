@@ -5,14 +5,14 @@
 .DESCRIPTION
   Needs Git, Python 3.11+, LLVM, VS Build Tools and GnuWin32 make on PATH
   (see Mu-Silicium's Building.md). The ~5 GB source tree and build output go
-  to D:\r8s-woa by default to keep them off C:.
+  to D:\woa by default to keep them off C:.
 
 .EXAMPLE
   .\firmware\tools\build.ps1
   .\firmware\tools\build.ps1 -WorkDir E:\woa -Target DEBUG
 #>
 param(
-    [string]$WorkDir = "D:\r8s-woa",
+    [string]$WorkDir = "D:\woa",
     [string]$MuRef   = "main",
     [ValidateSet("RELEASE","DEBUG")][string]$Target = "RELEASE"
 )

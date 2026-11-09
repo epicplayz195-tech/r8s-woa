@@ -8,7 +8,7 @@
   required for Windows. Android will not boot until uh is restored from
   the BL tar (or from the uh.img that Backup-Phone.ps1 saved).
 #>
-param([string]$BackupDir = "D:\r8s-woa\backups")
+param([string]$BackupDir = "D:\woa\backups")
 . "$PSScriptRoot\Common.ps1"
 
 $null = Assert-R8sInRecovery

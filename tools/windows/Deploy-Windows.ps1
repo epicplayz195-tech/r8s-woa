@@ -13,11 +13,11 @@
   writes boot files to S: and turns on test signing (r8s-woa drivers are
   test-signed). WinPE (-WinPE): copies a WinPE media folder to S: only.
 
-  Scratch space and logs go to D:\r8s-woa by default.
+  Scratch space and logs go to D:\woa by default.
 
 .EXAMPLE
   .\Deploy-Windows.ps1 -Image E:\sources\install.wim -Index 6 -Esp S -Win W -Drivers .\drivers\out
-  .\Deploy-Windows.ps1 -WinPE D:\WinPE_arm64\media -Esp S
+  .\Deploy-Windows.ps1 -WinPE D:\woa\WinPE -Esp S
 #>
 param(
     [string]$Image,
@@ -26,7 +26,7 @@ param(
     [Parameter(Mandatory)][ValidatePattern("^[A-Za-z]$")][string]$Esp,
     [ValidatePattern("^[A-Za-z]$")][string]$Win,
     [string]$Drivers,
-    [string]$Scratch = "D:\r8s-woa\scratch"
+    [string]$Scratch = "D:\woa\scratch"
 )
 $ErrorActionPreference = "Stop"
 

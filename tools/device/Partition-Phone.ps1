@@ -4,13 +4,13 @@
 
 .DESCRIPTION
   Deletes "userdata" on its UFS LUN and creates, in the same space:
-    esp  - FAT32, EspSizeMiB (default 512)
+    esp  - FAT32, EspSizeMiB (default 1024, room for WinPE)
     win  - Microsoft basic data, the rest (formatted NTFS from Windows later)
   Destroys all Android data. Run Backup-Phone.ps1 first.
 #>
 param(
-    [int]$EspSizeMiB = 512,
-    [string]$BackupDir = "D:\r8s-woa\backups"
+    [int]$EspSizeMiB = 1024,
+    [string]$BackupDir = "D:\woa\backups"
 )
 . "$PSScriptRoot\Common.ps1"
 

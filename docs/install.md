@@ -1,61 +1,92 @@
 # Installing on the Galaxy S20 FE (r8s)
 
 > Destroys Android and its data. Read every step first.
-> All PC-side files default to `D:\r8s-woa`.
+> Everything on the PC lives in **`D:\woa`**; nothing goes on C:.
+
+## Layout on the PC
+
+| Folder | What |
+|---|---|
+| `D:\woa\r8s-woa` | this repo (scripts and docs) |
+| `D:\woa\out` | `Mu-r8s.img` and `Mu-r8s-odin.tar.md5` from the GitHub Actions build |
+| `D:\woa\iso` | your Windows 11 **23H2 ARM64** ISO |
+| `D:\woa\WinPE` | WinPE media made by `Build-WinPE.ps1` |
+| `D:\woa\backups` | phone backups made by `Backup-Phone.ps1` |
+| `D:\woa\scratch` | DISM temp/mount space |
 
 ## 0. Prepare the PC
 
-- Android platform-tools (`winget install Google.PlatformTools`), Samsung USB driver.
-- `Mu-r8s.img` from the GitHub Actions artifact or `firmware/tools/build.ps1`.
-- ARM64 media: WinPE (Windows ADK + WinPE add-on, `copype arm64 D:\WinPE_arm64`)
-  for milestone 2; a Windows 11 ARM64 `install.wim`/`.esd` (23H2 or older — the
-  status page says newer builds don't boot on Exynos) for milestone 3.
+- Android platform-tools (`adb`) and the Samsung USB driver. Odin for the Download-mode route.
+- A Windows 11 **23H2 (build 22631) ARM64** ISO, saved in `D:\woa\iso`.
+  Get it from uupdump.net (Windows 11 23H2, arm64, "Download and convert to ISO").
+  Do **not** use 24H2/25H2: Exynos only boots 23H2 and older. The same ISO
+  gives you WinPE now and full Windows later.
 
-## 1. Boot TWRP and back up
+## 1. Back up (phone in TWRP)
 
 ```powershell
-cd D:\r8s-woa\repo\tools\device
+cd D:\woa\r8s-woa\tools\device
 .\Backup-Phone.ps1
 ```
-Copy the backup folder somewhere off the PC too. It holds EFS (IMEI), boot,
-recovery, uh and every LUN's GPT.
+Saves EFS (IMEI), boot, recovery, uh and every LUN's GPT to `D:\woa\backups`.
+Copy that folder somewhere off the PC too.
 
-## 2. Flash and test the UEFI first (nothing destructive yet)
+If TWRP isn't on the phone right now (r8sios's recovery image replaced it),
+flash TWRP back to RECOVERY first, or restore it from your old dump.
 
+## 2. Flash the UEFI and test it (nothing destructive yet)
+
+Either from TWRP:
 ```powershell
-.\Flash-Uefi.ps1 -Image D:\r8s-woa\out\Mu-r8s.img -Reboot
+.\Flash-Uefi.ps1 -Image D:\woa\out\Mu-r8s.img -Reboot
 ```
-Expected: Silicium boot menu on screen, buttons navigate. Check that internal
-storage shows up and try **Mass Storage** with the USB cable in. If it hangs or
-shows no storage, stop here and see `porting-notes.md`. To go back: boot to
-Download mode and flash `boot.img` from the backup.
+or from Download mode with Odin: put `Mu-r8s-odin.tar.md5` in **AP** and start.
+It only writes BOOT.
 
-## 3. Partition
+Expected: Silicium logo, then the boot menu. Check:
+1. Internal storage is listed (UfsDxe works).
+2. **Mass Storage** with the USB cable in: the phone's partitions appear on the PC.
 
-Back in TWRP:
+If it hangs, note the last screen and see `porting-notes.md`.
+
+## 3. Build WinPE (on the PC, elevated PowerShell)
+
 ```powershell
+cd D:\woa\r8s-woa\tools\windows
+.\Build-WinPE.ps1 -Iso D:\woa\iso\<your 22631 arm64>.iso
+```
+Output: `D:\woa\WinPE` (~400 MB).
+
+## 4. Partition (phone in TWRP)
+
+```powershell
+cd D:\woa\r8s-woa\tools\device
 .\Partition-Phone.ps1
 ```
-Replaces `userdata` with `esp` (512 MiB) + `win` (the rest).
+Replaces `userdata` with `esp` (1 GiB FAT32) + `win` (the rest).
 
-## 4. Erase uh
+## 5. Erase uh (phone in TWRP)
 
 ```powershell
 .\Erase-UH.ps1
 ```
-Required for Windows (Samsung's hypervisor traps EL1 MMU registers).
+Required for Windows: Samsung's hypervisor traps EL1 MMU registers.
 
-## 5. Deploy
+## 6. Put WinPE on the phone
 
-Reboot to UEFI, start **Mass Storage**, assign letters in Disk Management
-(e.g. `S` = esp, `W` = win), then in an elevated PowerShell:
+Boot the phone into the UEFI, start **Mass Storage**, plug it in. In Disk
+Management give the phone's `esp` partition a letter (e.g. `S`). Then:
+```powershell
+cd D:\woa\r8s-woa\tools\windows
+.\Deploy-Windows.ps1 -WinPE D:\woa\WinPE -Esp S
+```
+Eject, reboot the phone, pick the Windows Boot Manager entry. Success is a
+WinPE command prompt on the phone's screen (no touch yet; that needs drivers).
+
+## 7. Full Windows (later, once the UFS driver exists)
 
 ```powershell
-cd D:\r8s-woa\repo\tools\windows
-# Milestone 2 – WinPE
-.\Deploy-Windows.ps1 -WinPE D:\WinPE_arm64\media -Esp S
-# Milestone 3 – full Windows (needs drivers that don't exist yet)
-.\Deploy-Windows.ps1 -Image E:\sources\install.wim -Index 1 -Esp S -Win W -Drivers D:\r8s-woa\drivers
+.\Deploy-Windows.ps1 -Image D:\woa\iso\...\install.wim -Index 1 -Esp S -Win W -Drivers D:\woa\drivers
 ```
 
 ## Going back to Android

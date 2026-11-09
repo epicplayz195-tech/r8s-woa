@@ -48,4 +48,5 @@ jobs:
           name: Mu-r8s-${{ github.event.inputs.target || 'RELEASE' }}
           path: |
             out/Mu-r8s.img
-            out/Mu-r8s.img.sha256
+            out/Mu-r8s-odin.tar.md5
+            out/SHA256SUMS

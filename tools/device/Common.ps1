@@ -2,7 +2,7 @@
 # All scripts talk to the phone over adb while it is booted into TWRP.
 
 $ErrorActionPreference = "Stop"
-$script:DefaultDataDir = "D:\r8s-woa"
+$script:DefaultDataDir = "D:\woa"
 
 function Invoke-Adb {
     param([Parameter(ValueFromRemainingArguments)][string[]]$AdbArgs)

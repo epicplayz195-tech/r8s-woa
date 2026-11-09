@@ -54,5 +54,13 @@ echo "==> Building r8s ($TARGET)"
 (cd "$MU" && python3 build_uefi.py -d r8s -r "$TARGET")
 
 cp -v "$MU/Mu-r8s.img" "$ROOT/out/Mu-r8s.img"
-sha256sum "$ROOT/out/Mu-r8s.img" | tee "$ROOT/out/Mu-r8s.img.sha256"
-echo "==> Done: $ROOT/out/Mu-r8s.img"
+
+echo "==> Packing Odin tar (AP slot, writes BOOT)"
+ODIN_DIR="$(mktemp -d)"
+cp "$MU/Mu-r8s.img" "$ODIN_DIR/boot.img"
+tar --format=ustar -C "$ODIN_DIR" -cf "$ROOT/out/Mu-r8s-odin.tar" boot.img
+(cd "$ROOT/out" && md5sum Mu-r8s-odin.tar >> Mu-r8s-odin.tar && mv Mu-r8s-odin.tar Mu-r8s-odin.tar.md5)
+rm -rf "$ODIN_DIR"
+
+(cd "$ROOT/out" && sha256sum Mu-r8s.img Mu-r8s-odin.tar.md5 | tee SHA256SUMS)
+echo "==> Done: $ROOT/out/Mu-r8s.img, $ROOT/out/Mu-r8s-odin.tar.md5"
