@@ -55,8 +55,12 @@ Expected: Silicium logo, then the boot menu, with internal storage listed
 Needs `esp-r8s.img.gz` from the build in `D:\woa\out`.
 ```powershell
 cd D:\woa\r8s-woa\tools\device
-.\Partition-Phone.ps1
+.\Partition-Phone.ps1 -DryRun     # checks the GPT and shows the plan, writes nothing
+.\Partition-Phone.ps1             # does it
 ```
+TWRP's `sgdisk` is Android's cut-down build, so the script edits the GPT
+itself: it checks both copies (CRCs, identical entries), rewrites only the
+`userdata` slot and one free slot, and reads everything back.
 Replaces `userdata` with `esp` (1 GiB) + `win` (the rest), then writes a
 FAT32 image to `esp` that holds the UEFI Shell and a self-test script, and
 reads it back to verify. Reboot TWRP once afterwards.
