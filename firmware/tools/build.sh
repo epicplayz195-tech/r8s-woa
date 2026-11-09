@@ -62,5 +62,12 @@ tar --format=ustar -C "$ODIN_DIR" -cf "$ROOT/out/Mu-r8s-odin.tar" boot.img
 (cd "$ROOT/out" && md5sum Mu-r8s-odin.tar >> Mu-r8s-odin.tar && mv Mu-r8s-odin.tar Mu-r8s-odin.tar.md5)
 rm -rf "$ODIN_DIR"
 
-(cd "$ROOT/out" && sha256sum Mu-r8s.img Mu-r8s-odin.tar.md5 | tee SHA256SUMS)
+echo "==> Building the ESP test image (UEFI Shell on FAT32)"
+if ! command -v mkfs.fat >/dev/null || ! command -v mcopy >/dev/null; then
+  sudo apt-get install -y dosfstools mtools
+fi
+SHELL_EFI="$(find "$MU/Build/r8sPkg/${TARGET}_CLANGPDB/AARCH64" -maxdepth 1 -name Shell.efi | head -n1)"
+"$ROOT/firmware/tools/make-esp.sh" "$SHELL_EFI"
+
+(cd "$ROOT/out" && sha256sum Mu-r8s.img Mu-r8s-odin.tar.md5 esp-r8s.img.gz | tee SHA256SUMS)
 echo "==> Done: $ROOT/out/Mu-r8s.img, $ROOT/out/Mu-r8s-odin.tar.md5"

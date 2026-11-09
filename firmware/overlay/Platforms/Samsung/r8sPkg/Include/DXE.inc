@@ -48,7 +48,7 @@
   INF SiliciumPkg/Drivers/KeypadDeviceDxe/KeypadDeviceDxe.inf
   INF SiliciumPkg/Drivers/KeypadDxe/KeypadDxe.inf
 
-  # r8s-woa: USB device mode (DWC3) from x1s, needed for Mass Storage
+  # r8s-woa: USB device mode (DWC3) from x1s, used by FFU mode
   INF SamsungPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
 
   INF SamsungPkg/Drivers/RngDxe/RngDxe.inf

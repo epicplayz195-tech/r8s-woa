@@ -119,6 +119,6 @@ if (Test-Path $bcd) {
 
 $sizeMB = [math]::Round((Get-ChildItem $Out -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
 Write-Host "`nWinPE media ready: $Out ($sizeMB MB)"
-Write-Host "Next: start Mass Storage in the phone's UEFI menu, then"
-Write-Host "  .\Deploy-Windows.ps1 -WinPE $Out -Esp <esp drive letter>"
+Write-Host "Next, with the phone in TWRP:"
+Write-Host "  ..\device\Push-Esp.ps1 -Source $Out -Clean"
 if ($sizeMB -gt 900) { Write-Warning "This is larger than a 1 GiB ESP; repartition with a bigger -EspSizeMiB." }

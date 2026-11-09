@@ -1,7 +1,9 @@
 <#
 .SYNOPSIS
-  Put Windows (or WinPE) on the phone while it is exposed as a USB disk by
-  the Silicium UEFI "Mass Storage" option. Run as Administrator on your PC.
+  Apply Windows (or copy WinPE) to drive letters the PC can see.
+  NOTE: Samsung builds of Silicium have no Mass Storage, so this can't reach
+  the phone directly yet. For WinPE use tools\device\Push-Esp.ps1 (TWRP).
+  Run as Administrator on your PC.
 
 .DESCRIPTION
   1. In the UEFI menu on the phone, start Mass Storage and plug into the PC.

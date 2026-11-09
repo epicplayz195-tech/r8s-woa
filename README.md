@@ -21,7 +21,7 @@ storage/USB/ACPI work. This repo grafts that work onto r8s:
 | Change vs upstream r8sPkg | Source |
 |---|---|
 | UFS + microSD + FAT/partition DXE drivers | x1sPkg `DXE.inc` / `APRIORI.inc` |
-| USB device mode (DWC3) for Mass Storage | x1sPkg |
+| USB device mode (DWC3), used by FFU mode; no Mass Storage app on Samsung | x1sPkg |
 | ACPI tables (FADT/GTDT/MADT/DSDT/SSDT) enabled | Silicium-ACPI x1s, new GUID |
 | Memory map: 2nd EL2 code, S2MPU table, USB DRD, CMU HSI1, MSHC, CMGP, full UniPro window | x1sPkg `MemoryMapLib.c` |
 | EL2 Early Memory moved to r8s's top of RAM (`0x9_3E800000`) | derived from mainline `exynos990-r8s.dts` |
@@ -30,7 +30,7 @@ Details and the things to verify on hardware: [docs/porting-notes.md](docs/porti
 
 ## Milestones
 
-1. **UEFI with storage + USB** — boots to the Silicium menu, sees UFS and microSD, Mass Storage works. *(this repo, untested)*
+1. **UEFI with storage + USB** — boots to the Silicium menu, boots the UEFI Shell from UFS. *(UFS listed in the boot menu: confirmed on hardware)*
 2. **WinPE boots** — what x1s reaches today. Needs `uh` erased.
 3. **Full Windows** — needs a Windows UFS driver for Exynos 990 (port of `Exynos9810Ufs`), then HSI2C + touch. See [docs/driver-plan.md](docs/driver-plan.md).
 
@@ -39,13 +39,13 @@ Details and the things to verify on hardware: [docs/porting-notes.md](docs/porti
 | Path | What |
 |---|---|
 | `firmware/overlay/` | Files copied over a Mu-Silicium checkout (r8sPkg + Silicium-ACPI) |
-| `firmware/tools/build.sh` | Clone Mu-Silicium, apply overlay, build `Mu-r8s.img` (Linux/WSL/CI) |
+| `firmware/tools/build.sh` | Clone Mu-Silicium, apply overlay, build `Mu-r8s.img`, Odin tar and the ESP test image (Linux/WSL/CI) |
+| `firmware/tools/make-esp.sh` | 1 GiB FAT32 ESP image with the UEFI Shell and a storage self-test |
 | `firmware/tools/build.ps1` | Same, natively on Windows (defaults to `D:\woa`) |
 | `.github/workflows/build-uefi.yml` | GitHub Actions build: `Mu-r8s.img` + an Odin tar (AP) |
-| `tools/device/` | PowerShell + adb scripts run against TWRP: backup, erase `uh`, partition, flash UEFI |
+| `tools/device/` | PowerShell + adb scripts run against TWRP: backup, erase `uh`, partition + test ESP, flash UEFI, copy files to the ESP |
 | `tools/windows/Build-WinPE.ps1` | Make ARM64 WinPE media from a 23H2 ISO (or the ADK) |
-| `tools/windows/Test-PhoneStorage.ps1` | Read-only check that UFS works over UEFI Mass Storage |
-| `tools/windows/Deploy-Windows.ps1` | Apply Windows/WinPE over UEFI Mass Storage |
+| `tools/windows/Deploy-Windows.ps1` | Apply Windows to a disk the PC can see (for later; Samsung UEFI has no Mass Storage) |
 | `drivers/` | Windows driver work for Exynos 990 (plans + hardware tables, no code yet) |
 | `docs/` | Install guide, porting notes, driver plan |
 

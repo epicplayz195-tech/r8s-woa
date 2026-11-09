@@ -43,22 +43,35 @@ Either from TWRP:
 or from Download mode with Odin: put `Mu-r8s-odin.tar.md5` in **AP** and start.
 It only writes BOOT.
 
-Expected: Silicium logo, then the boot menu. Check:
-1. Internal storage is listed (UfsDxe found the controller and the GPT).
-2. Start **Mass Storage**, plug into the PC. If Windows offers to
-   **Initialize** or **Format** a disk, click **Cancel** every time.
-3. In an elevated PowerShell:
-   ```powershell
-   cd D:\woa\r8s-woa\tools\windows
-   .\Test-PhoneStorage.ps1
-   ```
-   Read-only. It reads the GPT at both ends of the disk, re-reads 16 MiB at
-   the start/middle/end and compares, and lists the partitions by name.
-   All `[OK]` = UFS reads work across the whole disk through the UEFI.
+Expected: Silicium logo, then the boot menu, with internal storage listed
+(UfsDxe found the controller and the GPT).
 
-If it hangs, note the last screen and see `porting-notes.md`.
+> Samsung builds of Silicium have **no Mass Storage** option (that app is
+> Qualcomm-only). **FFU Mode** is something else (Microsoft's flashing
+> protocol); don't use it. Files reach the phone through TWRP instead.
 
-## 3. Build WinPE (on the PC, elevated PowerShell)
+## 3. Partition and write the test ESP (phone in TWRP)
+
+Needs `esp-r8s.img.gz` from the build in `D:\woa\out`.
+```powershell
+cd D:\woa\r8s-woa\tools\device
+.\Partition-Phone.ps1
+```
+Replaces `userdata` with `esp` (1 GiB) + `win` (the rest), then writes a
+FAT32 image to `esp` that holds the UEFI Shell and a self-test script, and
+reads it back to verify. Reboot TWRP once afterwards.
+
+## 4. Test storage in the UEFI
+
+Boot the phone normally (UEFI), choose **internal storage** in the boot menu.
+The UEFI Shell starts **from the phone's UFS** and runs the test by itself:
+it lists the block devices and file systems, then prints the contents of the
+ESP and the line `UFS + GPT + FAT32 read OK`.
+
+- Shell appears and prints that line → UFS reads work. Type `reset` to reboot.
+- Nothing happens / back to the menu → send a photo of the screen.
+
+## 5. Build WinPE (on the PC, elevated PowerShell)
 
 ```powershell
 cd D:\woa\r8s-woa\tools\windows
@@ -66,37 +79,28 @@ cd D:\woa\r8s-woa\tools\windows
 ```
 Output: `D:\woa\WinPE` (~400 MB).
 
-## 4. Partition (phone in TWRP)
+## 6. Erase uh (phone in TWRP)
 
 ```powershell
 cd D:\woa\r8s-woa\tools\device
-.\Partition-Phone.ps1
-```
-Replaces `userdata` with `esp` (1 GiB FAT32) + `win` (the rest).
-
-## 5. Erase uh (phone in TWRP)
-
-```powershell
 .\Erase-UH.ps1
 ```
 Required for Windows: Samsung's hypervisor traps EL1 MMU registers.
 
-## 6. Put WinPE on the phone
-
-Boot the phone into the UEFI, start **Mass Storage**, plug it in. In Disk
-Management give the phone's `esp` partition a letter (e.g. `S`). Then:
-```powershell
-cd D:\woa\r8s-woa\tools\windows
-.\Deploy-Windows.ps1 -WinPE D:\woa\WinPE -Esp S
-```
-Eject, reboot the phone, pick the Windows Boot Manager entry. Success is a
-WinPE command prompt on the phone's screen (no touch yet; that needs drivers).
-
-## 7. Full Windows (later, once the UFS driver exists)
+## 7. Put WinPE on the phone (phone in TWRP)
 
 ```powershell
-.\Deploy-Windows.ps1 -Image D:\woa\iso\...\install.wim -Index 1 -Esp S -Win W -Drivers D:\woa\drivers
+.\Push-Esp.ps1 -Source D:\woa\WinPE -Clean
 ```
+Reboot to the UEFI, choose internal storage. Success is a WinPE command
+prompt on the phone's screen (no touch yet; that needs drivers).
+
+## 8. Full Windows (later, once the UFS driver exists)
+
+Without Mass Storage, `Deploy-Windows.ps1` can't write to the phone directly.
+Full Windows will be built into an image on the PC and written to `win`
+through TWRP, the way exynos9810-woa does it; that script comes with the
+UFS driver.
 
 ## Going back to Android
 

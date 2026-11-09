@@ -49,4 +49,5 @@ jobs:
           path: |
             out/Mu-r8s.img
             out/Mu-r8s-odin.tar.md5
+            out/esp-r8s.img.gz
             out/SHA256SUMS

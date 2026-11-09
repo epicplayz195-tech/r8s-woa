@@ -4,13 +4,17 @@
 
 .DESCRIPTION
   Deletes "userdata" on its UFS LUN and creates, in the same space:
-    esp  - FAT32, EspSizeMiB (default 1024, room for WinPE)
-    win  - Microsoft basic data, the rest (formatted NTFS from Windows later)
+    esp  - EspSizeMiB (default 1024, room for WinPE), then the prebuilt
+           FAT32 image esp-r8s.img.gz (UEFI Shell + storage self-test) is
+           written to it. TWRP usually has no mkfs.fat, hence the image.
+    win  - Microsoft basic data, the rest (NTFS later)
   Destroys all Android data. Run Backup-Phone.ps1 first.
 #>
 param(
     [int]$EspSizeMiB = 1024,
-    [string]$BackupDir = "D:\woa\backups"
+    [string]$EspImage = "D:\woa\out\esp-r8s.img.gz",
+    [string]$BackupDir = "D:\woa\backups",
+    [string]$Scratch = "D:\woa\scratch"
 )
 . "$PSScriptRoot\Common.ps1"
 
@@ -18,6 +22,9 @@ $null = Assert-R8sInRecovery
 if (-not (Get-ChildItem -Path $BackupDir -Recurse -Filter "SHA256SUMS" -ErrorAction SilentlyContinue)) {
     throw "No backup found under $BackupDir. Run Backup-Phone.ps1 first."
 }
+
+if (-not (Test-Path $EspImage)) { throw "ESP image not found: $EspImage (it comes with the GitHub Actions build)." }
+if ($EspSizeMiB -lt 1024) { throw "EspSizeMiB must be at least 1024 (the ESP image is 1 GiB)." }
 
 $sgdisk = Invoke-PhoneShell "command -v sgdisk || true"
 if (-not $sgdisk) { throw "sgdisk not found in this TWRP build. Push a static arm64 sgdisk to /tmp and add it to PATH." }
@@ -49,11 +56,27 @@ Invoke-PhoneShell ("sgdisk -d $num " +
     "-n ${numWin}:$($espEnd + 1):${last} -t ${numWin}:0700 -c ${numWin}:win $disk") | Out-Null
 Invoke-PhoneShell "sync; blockdev --rereadpt $disk 2>/dev/null; true" | Out-Null
 
-$mkfat = Invoke-PhoneShell "command -v mkfs.fat || command -v mkfs.vfat || true"
-if ($mkfat) {
-    Invoke-PhoneShell "$mkfat -F 32 -n ESP /dev/block/by-name/esp" | Out-Null
-    Write-Host "ESP formatted FAT32."
-} else {
-    Write-Warning "No mkfs.fat in TWRP: format 'esp' as FAT32 from Windows over UEFI Mass Storage."
-}
-Write-Host "Done. Format 'win' as NTFS from Windows (see docs/install.md)."
+# The kernel still has the old (larger) partition at the same start sector,
+# so write through ${disk}${num} rather than the by-name link, which only
+# updates after a reboot.
+Write-Host "==> Writing the ESP image (FAT32 + UEFI Shell)"
+New-Item -ItemType Directory -Force -Path $Scratch | Out-Null
+$raw = Join-Path $Scratch "esp-r8s.img"
+$in  = [System.IO.File]::OpenRead($EspImage)
+$gz  = [System.IO.Compression.GZipStream]::new($in, [System.IO.Compression.CompressionMode]::Decompress)
+$outf = [System.IO.File]::Create($raw)
+try { $gz.CopyTo($outf) } finally { $outf.Dispose(); $gz.Dispose(); $in.Dispose() }
+$rawSize = (Get-Item $raw).Length
+if ($rawSize -gt [int64]$EspSizeMiB * 1MB) { throw "ESP image ($rawSize B) is larger than the ESP." }
+$hash = (Get-FileHash $raw -Algorithm SHA256).Hash.ToLower()
+
+Invoke-Adb push $raw /tmp/esp-r8s.img | Out-Null
+Invoke-PhoneShell "dd if=/tmp/esp-r8s.img of=$disk$num bs=4M; sync" | Out-Null
+$back = Invoke-PhoneShell "head -c $rawSize $disk$num | sha256sum | cut -d' ' -f1"
+Invoke-PhoneShell "rm -f /tmp/esp-r8s.img" | Out-Null
+Remove-Item $raw
+if ($back -ne $hash) { throw "ESP verification failed: wrote $hash, read back $back." }
+
+Write-Host "Done. ESP written and verified."
+Write-Host "Reboot TWRP once so the new 'esp' and 'win' names appear."
+Write-Host "Then flash/boot the UEFI and pick internal storage: the UEFI Shell should start from UFS."
