@@ -96,26 +96,48 @@ else {
     Copy-Item "$pe\en-us\winpe.wim" "$Out\sources\boot.wim"
 }
 
-if ($Drivers) {
-    Write-Host "==> Adding drivers from $Drivers"
-    $mount = Join-Path $Scratch "mount"
-    New-Item -ItemType Directory -Force -Path $mount | Out-Null
-    Mount-WindowsImage -ImagePath "$Out\sources\boot.wim" -Index 1 -Path $mount -ScratchDirectory $Scratch | Out-Null
-    try {
+# Files copied off an ISO are read-only; clear that so BCD/boot.wim can be edited.
+Get-ChildItem $Out -Recurse -File | ForEach-Object { $_.IsReadOnly = $false }
+
+# Mount boot.wim once: add drivers (optional) and make crashes stay on screen.
+Write-Host "==> Customising WinPE"
+$mount = Join-Path $Scratch "mount"
+New-Item -ItemType Directory -Force -Path $mount | Out-Null
+Mount-WindowsImage -ImagePath "$Out\sources\boot.wim" -Index 1 -Path $mount -ScratchDirectory $Scratch | Out-Null
+try {
+    if ($Drivers) {
+        Write-Host "   adding drivers from $Drivers"
         Add-WindowsDriver -Path $mount -Driver $Drivers -Recurse -ForceUnsigned -ScratchDirectory $Scratch | Out-Null
-        Dismount-WindowsImage -Path $mount -Save -ScratchDirectory $Scratch | Out-Null
-    } catch {
-        Dismount-WindowsImage -Path $mount -Discard -ScratchDirectory $Scratch | Out-Null
-        throw
     }
+    # No log can be saved on the phone yet (no UFS driver in Windows), so a
+    # blue screen must stay up long enough to read/film: no auto-reboot.
+    Write-Host "   blue screens stay on screen (AutoReboot=0)"
+    reg load HKLM\R8S_PE_SYS "$mount\Windows\System32\config\SYSTEM" | Out-Null
+    try {
+        reg add "HKLM\R8S_PE_SYS\ControlSet001\Control\CrashControl" /v AutoReboot /t REG_DWORD /d 0 /f | Out-Null
+        reg add "HKLM\R8S_PE_SYS\ControlSet001\Control\CrashControl" /v DisplayParameters /t REG_DWORD /d 1 /f | Out-Null
+    } finally {
+        [gc]::Collect(); Start-Sleep -Seconds 1
+        reg unload HKLM\R8S_PE_SYS | Out-Null
+    }
+    Dismount-WindowsImage -Path $mount -Save -ScratchDirectory $Scratch | Out-Null
+} catch {
+    Dismount-WindowsImage -Path $mount -Discard -ScratchDirectory $Scratch -ErrorAction SilentlyContinue | Out-Null
+    throw
 }
 
 # r8s-woa drivers are test-signed; let WinPE load them.
 $bcd = "$Out\efi\microsoft\boot\bcd"
-if (Test-Path $bcd) {
-    bcdedit /store $bcd /set "{default}" testsigning on       | Out-Null
-    bcdedit /store $bcd /set "{default}" nointegritychecks on | Out-Null
+if (-not (Test-Path $bcd)) { throw "No BCD at $bcd." }
+foreach ($opt in @(
+        @("testsigning", "on"),          # r8s-woa drivers are test-signed
+        @("nointegritychecks", "on"),
+        @("sos", "on"),                  # print each driver as it loads: shows where boot stops
+        @("bootmenupolicy", "legacy"))) {
+    $o = bcdedit /store $bcd /set "{default}" $opt[0] $opt[1] 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "bcdedit $($opt[0]) failed: $o" }
 }
+Write-Host "   BCD: test signing, driver list on screen"
 
 $sizeMB = [math]::Round((Get-ChildItem $Out -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
 Write-Host "`nWinPE media ready: $Out ($sizeMB MB)"
