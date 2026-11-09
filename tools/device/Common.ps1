@@ -12,25 +12,44 @@ if (-not $script:Adb) {
     }
 }
 
-function Invoke-Adb {
-    param([Parameter(ValueFromRemainingArguments)][string[]]$AdbArgs)
-    $out = & $script:Adb @AdbArgs 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "adb $($AdbArgs -join ' ') failed:`n$out" }
-    return $out
-}
-
-function Invoke-PhoneShell([string]$Command) {
-    $out = & $script:Adb shell $Command 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "adb shell '$Command' failed:`n$out" }
-    return ($out | Out-String).Trim()
-}
-
-function Assert-R8sInRecovery {
+# Run adb without letting Windows PowerShell 5.1 turn its stderr (daemon
+# start-up notices, dd progress) into a terminating error. Returns stdout
+# lines, stderr lines and the exit code separately.
+function Invoke-AdbRaw([string[]]$AdbArgs) {
     if (-not $script:Adb) {
         throw "adb not found. Put platform-tools in $PSScriptRoot\platform-tools or D:\woa\platform-tools, or add adb to PATH."
     }
-    $state = (& $script:Adb get-state 2>&1 | Out-String).Trim()
-    if ($state -ne "recovery") { throw "Phone is not in TWRP (adb state: '$state'). Boot TWRP and retry." }
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $all  = & $script:Adb @AdbArgs 2>&1
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $prev }
+    $stdout = @($all | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { "$_" })
+    $stderr = @($all | Where-Object { $_ -is    [System.Management.Automation.ErrorRecord] } | ForEach-Object { "$_" })
+    [pscustomobject]@{ Out = ($stdout -join "`n").Trim(); Err = ($stderr -join "`n").Trim(); Code = $code }
+}
+
+function Invoke-Adb {
+    param([Parameter(ValueFromRemainingArguments)][string[]]$AdbArgs)
+    $r = Invoke-AdbRaw $AdbArgs
+    if ($r.Code -ne 0) { throw "adb $($AdbArgs -join ' ') failed (exit $($r.Code)):`n$($r.Out)`n$($r.Err)" }
+    return $r.Out
+}
+
+function Invoke-PhoneShell([string]$Command) {
+    $r = Invoke-AdbRaw @("shell", $Command)
+    if ($r.Code -ne 0) { throw "adb shell '$Command' failed (exit $($r.Code)):`n$($r.Out)`n$($r.Err)" }
+    return $r.Out
+}
+
+function Assert-R8sInRecovery {
+    Write-Host "Using adb: $script:Adb"
+    $r = Invoke-AdbRaw @("get-state")
+    if ($r.Out -ne "recovery") {
+        $devices = (Invoke-AdbRaw @("devices")).Out
+        throw "Phone is not in TWRP (adb state: '$($r.Out)' $($r.Err)).`nadb devices:`n$devices`nBoot TWRP, plug in USB, and retry."
+    }
 
     $device = Invoke-PhoneShell "getprop ro.product.device"
     if ($device -notmatch "r8s") { throw "Connected device is '$device', not r8s. Refusing to continue." }
