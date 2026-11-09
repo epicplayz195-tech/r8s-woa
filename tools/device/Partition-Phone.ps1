@@ -23,6 +23,9 @@ if (-not (Get-ChildItem -Path $BackupDir -Recurse -Filter "SHA256SUMS" -ErrorAct
     throw "No backup found under $BackupDir. Run Backup-Phone.ps1 first."
 }
 
+if (-not (Test-Path $EspImage) -and (Test-Path "D:\woa\Mu-r8s-RELEASE\esp-r8s.img.gz")) {
+    $EspImage = "D:\woa\Mu-r8s-RELEASE\esp-r8s.img.gz"
+}
 if (-not (Test-Path $EspImage)) { throw "ESP image not found: $EspImage (it comes with the GitHub Actions build)." }
 if ($EspSizeMiB -lt 1024) { throw "EspSizeMiB must be at least 1024 (the ESP image is 1 GiB)." }
 

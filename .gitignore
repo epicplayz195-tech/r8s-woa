@@ -3,3 +3,4 @@ out/
 *.img
 *.wim
 *.esd
+platform-tools/
