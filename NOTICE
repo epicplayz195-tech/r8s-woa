@@ -11,4 +11,6 @@ This project builds on and reuses material from:
   project structure, install flow and driver plan.
 - Linux exynos990-r8s.dts by Denzeel Oliva (GPL-2.0 OR BSD-3-Clause): memory
   layout facts used to derive the r8s memory map (no code copied).
-- Itzkristis/r8q-arch: reference for the FTS5CU56A touch protocol (no code copied).
+- epicplayz195-tech/r8sios: hardware facts for this phone (memory layout, live
+  device tree) and the working iOS-kernel UFS and Zinitix touch drivers used as
+  references for the Windows drivers.

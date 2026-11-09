@@ -1,7 +1,7 @@
 # drivers/
 
 Windows drivers for the Galaxy S20 FE (Exynos 990) go here, one folder per
-driver (`Exynos990Ufs/`, `Exynos990Hsi2c/`, `Fts5cu56aTouch/`), following the
+driver (`Exynos990Ufs/`, `Exynos990Hsi2c/`, `Zt7650Touch/`), following the
 layout of `ntdevlabs/exynos9810-woa/drivers`.
 
 Nothing is implemented yet. Start with [../docs/driver-plan.md](../docs/driver-plan.md).
