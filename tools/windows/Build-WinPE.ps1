@@ -100,30 +100,38 @@ else {
 Get-ChildItem $Out -Recurse -File | ForEach-Object { $_.IsReadOnly = $false }
 
 # Mount boot.wim once: add drivers (optional) and make crashes stay on screen.
-Write-Host "==> Customising WinPE"
-$mount = Join-Path $Scratch "mount"
-New-Item -ItemType Directory -Force -Path $mount | Out-Null
-Mount-WindowsImage -ImagePath "$Out\sources\boot.wim" -Index 1 -Path $mount -ScratchDirectory $Scratch | Out-Null
-try {
-    if ($Drivers) {
-        Write-Host "   adding drivers from $Drivers"
-        Add-WindowsDriver -Path $mount -Driver $Drivers -Recurse -ForceUnsigned -ScratchDirectory $Scratch | Out-Null
-    }
-    # No log can be saved on the phone yet (no UFS driver in Windows), so a
-    # blue screen must stay up long enough to read/film: no auto-reboot.
-    Write-Host "   blue screens stay on screen (AutoReboot=0)"
-    reg load HKLM\R8S_PE_SYS "$mount\Windows\System32\config\SYSTEM" | Out-Null
+# DISM can only mount into an NTFS folder; on exFAT/FAT drives skip this
+# optional step (it's needed only for -Drivers).
+$scratchFs = (Get-Volume -DriveLetter ($Scratch.Substring(0,1))).FileSystem
+if ($scratchFs -ne "NTFS") {
+    if ($Drivers) { throw "Adding drivers needs an NTFS drive for -Scratch ($Scratch is $scratchFs)." }
+    Write-Warning "$($Scratch.Substring(0,2)) is $scratchFs, not NTFS: skipping the WinPE registry tweak (blue screens will auto-reboot after a few seconds; film them)."
+} else {
+    Write-Host "==> Customising WinPE"
+    $mount = Join-Path $Scratch "mount"
+    New-Item -ItemType Directory -Force -Path $mount | Out-Null
+    Mount-WindowsImage -ImagePath "$Out\sources\boot.wim" -Index 1 -Path $mount -ScratchDirectory $Scratch | Out-Null
     try {
-        reg add "HKLM\R8S_PE_SYS\ControlSet001\Control\CrashControl" /v AutoReboot /t REG_DWORD /d 0 /f | Out-Null
-        reg add "HKLM\R8S_PE_SYS\ControlSet001\Control\CrashControl" /v DisplayParameters /t REG_DWORD /d 1 /f | Out-Null
-    } finally {
-        [gc]::Collect(); Start-Sleep -Seconds 1
-        reg unload HKLM\R8S_PE_SYS | Out-Null
+        if ($Drivers) {
+            Write-Host "   adding drivers from $Drivers"
+            Add-WindowsDriver -Path $mount -Driver $Drivers -Recurse -ForceUnsigned -ScratchDirectory $Scratch | Out-Null
+        }
+        # No log can be saved on the phone yet (no UFS driver in Windows), so a
+        # blue screen must stay up long enough to read/film: no auto-reboot.
+        Write-Host "   blue screens stay on screen (AutoReboot=0)"
+        reg load HKLM\R8S_PE_SYS "$mount\Windows\System32\config\SYSTEM" | Out-Null
+        try {
+            reg add "HKLM\R8S_PE_SYS\ControlSet001\Control\CrashControl" /v AutoReboot /t REG_DWORD /d 0 /f | Out-Null
+            reg add "HKLM\R8S_PE_SYS\ControlSet001\Control\CrashControl" /v DisplayParameters /t REG_DWORD /d 1 /f | Out-Null
+        } finally {
+            [gc]::Collect(); Start-Sleep -Seconds 1
+            reg unload HKLM\R8S_PE_SYS | Out-Null
+        }
+        Dismount-WindowsImage -Path $mount -Save -ScratchDirectory $Scratch | Out-Null
+    } catch {
+        Dismount-WindowsImage -Path $mount -Discard -ScratchDirectory $Scratch -ErrorAction SilentlyContinue | Out-Null
+        throw
     }
-    Dismount-WindowsImage -Path $mount -Save -ScratchDirectory $Scratch | Out-Null
-} catch {
-    Dismount-WindowsImage -Path $mount -Discard -ScratchDirectory $Scratch -ErrorAction SilentlyContinue | Out-Null
-    throw
 }
 
 # r8s-woa drivers are test-signed; let WinPE load them.
