@@ -30,7 +30,7 @@ Details and the things to verify on hardware: [docs/porting-notes.md](docs/porti
 
 ## Milestones
 
-1. **UEFI with storage + USB** — boots to the Silicium menu, boots the UEFI Shell from UFS. *(UFS listed in the boot menu: confirmed on hardware)*
+1. **UEFI with storage + USB** — boots to the Silicium menu, boots the UEFI Shell from UFS. **Done: confirmed on hardware (bit-24 S20 FE, 9 Nov 2026)**: Shell loaded from the `esp` partition, listed devices and read files.
 2. **WinPE boots** — what x1s reaches today. Needs `uh` erased.
 3. **Full Windows** — needs a Windows UFS driver for Exynos 990 (port of `Exynos9810Ufs`), then HSI2C + touch. See [docs/driver-plan.md](docs/driver-plan.md).
 
