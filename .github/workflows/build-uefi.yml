@@ -1,0 +1,51 @@
+name: Build r8s UEFI
+
+on:
+  push:
+    paths:
+      - "firmware/**"
+      - ".github/workflows/build-uefi.yml"
+  pull_request:
+    paths:
+      - "firmware/**"
+  workflow_dispatch:
+    inputs:
+      mu_ref:
+        description: "Mu-Silicium branch, tag or commit"
+        default: "main"
+      target:
+        description: "Build target"
+        type: choice
+        options: [RELEASE, DEBUG]
+        default: RELEASE
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space (Mu-Silicium is ~5 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        env:
+          MU_REF: ${{ github.event.inputs.mu_ref || 'main' }}
+        run: |
+          chmod +x firmware/tools/build.sh
+          ./firmware/tools/build.sh -t "${{ github.event.inputs.target || 'RELEASE' }}"
+
+      - name: Upload UEFI image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mu-r8s-${{ github.event.inputs.target || 'RELEASE' }}
+          path: |
+            out/Mu-r8s.img
+            out/Mu-r8s.img.sha256

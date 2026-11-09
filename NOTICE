@@ -1,0 +1,14 @@
+r8s-woa — Windows on the Samsung Galaxy S20 FE (Exynos 990)
+
+This project builds on and reuses material from:
+
+- Project Silicium / Mu-Silicium (https://github.com/Project-Silicium/Mu-Silicium)
+  BSD-2-Clause / BSD-2-Clause-Patent. The files under firmware/overlay/ are
+  modified copies of Mu-Silicium's r8sPkg and x1sPkg (Platforms/Samsung) and
+  of Silicium-ACPI's x1s AcpiTables.inf, and keep their original headers.
+- Microsoft Project Mu (BSD-2-Clause-Patent).
+- ntdevlabs/exynos9810-woa and ilyatbn/exynos-woa (BSD-2-Clause-Patent):
+  project structure, install flow and driver plan.
+- Linux exynos990-r8s.dts by Denzeel Oliva (GPL-2.0 OR BSD-3-Clause): memory
+  layout facts used to derive the r8s memory map (no code copied).
+- Itzkristis/r8q-arch: reference for the FTS5CU56A touch protocol (no code copied).
