@@ -82,6 +82,11 @@
   SiliciumPkg/Drivers/KeypadDeviceDxe/KeypadDeviceDxe.inf
 
   #
+  # r8s-woa: firmware self-test app (runs from the ESP before Boot Manager)
+  #
+  r8sPkg/Applications/R8sDiag/R8sDiag.inf
+
+  #
   # r8s-woa: UEFI Shell, built as a standalone Shell.efi (not in the FV).
   # make-esp.sh puts it on the test ESP image as \EFI\Boot\bootaa64.efi.
   #

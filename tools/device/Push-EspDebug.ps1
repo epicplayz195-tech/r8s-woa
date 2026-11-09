@@ -8,8 +8,9 @@
   2. copies the WinPE folder on top,
   3. renames WinPE's \efi\boot\bootaa64.efi (Boot Manager) to winpe.efi and
      puts the Shell back as bootaa64.efi,
-  4. writes a startup.nsh that runs winpe.efi automatically and prints its
-     return code if it comes back. The Shell needs no typing.
+  4. writes a startup.nsh that runs the firmware self-test (R8sDiag.efi,
+     prints each service Boot Manager uses before calling it), then
+     winpe.efi, and prints its return code if it comes back. No typing.
 
   On screen afterwards:
     "Running ...winpe.efi" then frozen/black -> Boot Manager hangs.
@@ -58,7 +59,12 @@ try {
     $nsh = @'
 @echo -off
 echo " "
-echo "=== r8s-woa: Shell -> Windows Boot Manager ==="
+echo "=== r8s-woa: self-test, then Windows Boot Manager ==="
+for %m in fs0 fs1 fs2 fs3 fs4
+  if exist %m:\EFI\r8s\R8sDiag.efi then
+    %m:\EFI\r8s\R8sDiag.efi
+  endif
+endfor
 for %m in fs0 fs1 fs2 fs3 fs4
   if exist %m:\efi\boot\winpe.efi then
     %m:
@@ -78,7 +84,7 @@ echo "winpe.efi not found on fs0-fs4"
     [System.IO.File]::WriteAllText($nshPath, ($nsh -replace "`r?`n", "`r`n"), [System.Text.Encoding]::ASCII)
     Invoke-Adb push $nshPath /tmp/esp/startup.nsh | Out-Null
 
-    $ls = Invoke-PhoneShell "ls -l /tmp/esp/efi/boot/ /tmp/esp/startup.nsh /tmp/esp/sources/"
+    $ls = Invoke-PhoneShell "ls -l /tmp/esp/efi/boot/ /tmp/esp/EFI/r8s/ /tmp/esp/startup.nsh /tmp/esp/sources/ 2>&1; true"
     Write-Host $ls
 }
 finally {

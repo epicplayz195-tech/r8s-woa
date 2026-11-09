@@ -18,7 +18,8 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$OUT"
 
 SHELL_EFI="${1:-}"
-[[ -f "$SHELL_EFI" ]] || { echo "usage: make-esp.sh <path to AARCH64 Shell.efi>" >&2; exit 1; }
+DIAG_EFI="${2:-}"
+[[ -f "$SHELL_EFI" ]] || { echo "usage: make-esp.sh <Shell.efi> [R8sDiag.efi]" >&2; exit 1; }
 
 cat > "$TMP/startup.nsh" <<'EOF'
 @echo -off
@@ -38,6 +39,11 @@ for %m in fs0 fs1 fs2 fs3
 endfor
 echo " "
 echo "If you can read this and the file list above, UFS reads work."
+for %m in fs0 fs1 fs2 fs3
+  if exist %m:\EFI\r8s\R8sDiag.efi then
+    %m:\EFI\r8s\R8sDiag.efi
+  endif
+endfor
 echo "Type 'reset' to reboot, or 'reset -s' to power off."
 EOF
 
@@ -51,6 +57,10 @@ mmd   -i "$IMG" ::/EFI ::/EFI/Boot
 mcopy -i "$IMG" "$SHELL_EFI"        ::/EFI/Boot/bootaa64.efi
 mcopy -i "$IMG" "$TMP/startup.nsh"  ::/startup.nsh
 mcopy -i "$IMG" "$TMP/r8s-woa-esp.txt" ::/r8s-woa-esp.txt
+if [[ -f "$DIAG_EFI" ]]; then
+  mmd   -i "$IMG" ::/EFI/r8s
+  mcopy -i "$IMG" "$DIAG_EFI" ::/EFI/r8s/R8sDiag.efi
+fi
 mdir  -i "$IMG" -/ ::/
 
 gzip -9 -c "$IMG" > "$OUT/esp-r8s.img.gz"

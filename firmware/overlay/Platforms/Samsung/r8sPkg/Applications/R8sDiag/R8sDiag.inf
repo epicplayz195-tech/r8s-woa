@@ -1,0 +1,39 @@
+## @file
+#  r8s-woa firmware self-test (see R8sDiag.c).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = R8sDiag
+  FILE_GUID                      = 5C0B7E21-3A9F-4D6B-8E42-71C9A0F3B6D8
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = R8sDiagMain
+
+[Sources]
+  R8sDiag.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  ArmPkg/ArmPkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiLib
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  MemoryAllocationLib
+  BaseMemoryLib
+  ArmLib
+  ArmGenericTimerCounterLib
+
+[Protocols]
+  gEfiRngProtocolGuid
+  gEfiGraphicsOutputProtocolGuid
+  gEfiBlockIoProtocolGuid
+
+[Guids]
+  gEfiGlobalVariableGuid
