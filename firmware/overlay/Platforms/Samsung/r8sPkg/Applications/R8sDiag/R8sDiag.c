@@ -224,6 +224,89 @@ TestBlockIo (
   }
 }
 
+//
+// System registers Windows Boot Manager writes when it switches to its own
+// memory mapping. Each is written back with its current value (no effect on
+// a normal CPU). If a hypervisor at EL2 (Samsung uh / harx) traps the write
+// and never returns, the phone hangs right after the line naming it.
+//
+#define SYSREG_RW(Name)                                                          \
+  STATIC UINT64 Read_##Name (VOID) { UINT64 V; __asm__ __volatile__ ("mrs %0, " #Name : "=r" (V)); return V; } \
+  STATIC VOID Write_##Name (UINT64 V) { __asm__ __volatile__ ("msr " #Name ", %0\n isb" : : "r" (V) : "memory"); }
+
+SYSREG_RW (ttbr0_el1)
+SYSREG_RW (ttbr1_el1)
+SYSREG_RW (tcr_el1)
+SYSREG_RW (mair_el1)
+SYSREG_RW (sctlr_el1)
+SYSREG_RW (vbar_el1)
+SYSREG_RW (contextidr_el1)
+
+#define TEST_SYSREG(Name)                                             \
+  do {                                                                \
+    UINT64 V = Read_##Name ();                                        \
+    Print (L"%-34a ... ", "write " #Name " (same value)");            \
+    Write_##Name (V);                                                 \
+    Print (L"OK  0x%lx\n", V);                                        \
+  } while (0)
+
+STATIC
+VOID
+TestLowMemory (
+  VOID
+  )
+{
+  EFI_STATUS            Status;
+  EFI_PHYSICAL_ADDRESS  Addr;
+  volatile UINT64       *P;
+  UINTN                 Index;
+  UINTN                 Bad;
+
+  // Boot Manager puts its context-switch code here (0x80 pages at 0x80000000).
+  Addr = 0x80000000;
+  STEP (L"Allocate 0x80000000 (0x80 pages)");
+  Status = gBS->AllocatePages (AllocateAddress, EfiLoaderCode, 0x80, &Addr);
+  Print (L"%r\n", Status);
+  if (EFI_ERROR (Status)) {
+    return;
+  }
+
+  STEP (L"Write + read back 512 KB there");
+  P   = (volatile UINT64 *)(UINTN)Addr;
+  Bad = 0;
+  for (Index = 0; Index < 0x80000 / 8; Index++) {
+    P[Index] = 0x5A5A0000ULL ^ Index;
+  }
+
+  for (Index = 0; Index < 0x80000 / 8; Index++) {
+    if (P[Index] != (0x5A5A0000ULL ^ Index)) {
+      Bad++;
+    }
+  }
+
+  Print (L"%d bad words\n", (UINT32)Bad);
+  gBS->FreePages (Addr, 0x80);
+}
+
+STATIC
+VOID
+TestSysRegs (
+  VOID
+  )
+{
+  TEST_SYSREG (contextidr_el1);
+  TEST_SYSREG (vbar_el1);
+  TEST_SYSREG (mair_el1);
+  TEST_SYSREG (tcr_el1);
+  TEST_SYSREG (ttbr1_el1);
+  TEST_SYSREG (ttbr0_el1);
+  TEST_SYSREG (sctlr_el1);
+
+  STEP (L"tlbi vmalle1 + dsb + isb");
+  __asm__ __volatile__ ("dsb ishst\n tlbi vmalle1\n dsb ish\n isb" : : : "memory");
+  Print (L"OK\n");
+}
+
 EFI_STATUS
 EFIAPI
 R8sDiagMain (
@@ -242,6 +325,8 @@ R8sDiagMain (
   TestGraphics ();
   TestMemory ();
   TestBlockIo ();
+  TestLowMemory ();
+  TestSysRegs ();
 
   Print (L"=== self-test finished: no hang ===\n\n");
   return EFI_SUCCESS;
