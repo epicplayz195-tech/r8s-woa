@@ -19,13 +19,14 @@
 #>
 param(
     [string]$Source   = "D:\woa\WinPE",
-    [string]$EspImage = "D:\woa\out\esp-r8s.img.gz",
+    [string]$EspImage = "D:\woa\Mu-r8s-DEBUG\esp-r8s.img.gz",
     [string]$Scratch  = "D:\woa\scratch"
 )
 . "$PSScriptRoot\Common.ps1"
 
 $null = Assert-R8sInRecovery
 if (-not (Test-Path $EspImage) -and (Test-Path "D:\woa\Mu-r8s-RELEASE\esp-r8s.img.gz")) {
+    Write-Warning "No DEBUG ESP image at $EspImage; using the RELEASE one (no call trace)."
     $EspImage = "D:\woa\Mu-r8s-RELEASE\esp-r8s.img.gz"
 }
 foreach ($p in $Source, $EspImage) { if (-not (Test-Path $p)) { throw "Not found: $p" } }
@@ -68,8 +69,13 @@ endfor
 for %m in fs0 fs1 fs2 fs3 fs4
   if exist %m:\efi\boot\winpe.efi then
     %m:
-    echo "Running %m:\efi\boot\winpe.efi ..."
-    \efi\boot\winpe.efi
+    if exist \EFI\r8s\R8sTrace.efi then
+      echo "Running Boot Manager under the tracer (DEBUG firmware shows the calls) ..."
+      \EFI\r8s\R8sTrace.efi
+    else
+      echo "Running %m:\efi\boot\winpe.efi ..."
+      \efi\boot\winpe.efi
+    endif
     echo " "
     echo "Boot Manager returned, lasterror = %lasterror%"
     echo "Film this screen. Hold Power to restart."

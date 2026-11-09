@@ -19,6 +19,7 @@ mkdir -p "$OUT"
 
 SHELL_EFI="${1:-}"
 DIAG_EFI="${2:-}"
+TRACE_EFI="${3:-}"
 [[ -f "$SHELL_EFI" ]] || { echo "usage: make-esp.sh <Shell.efi> [R8sDiag.efi]" >&2; exit 1; }
 
 cat > "$TMP/startup.nsh" <<'EOF'
@@ -60,6 +61,10 @@ mcopy -i "$IMG" "$TMP/r8s-woa-esp.txt" ::/r8s-woa-esp.txt
 if [[ -f "$DIAG_EFI" ]]; then
   mmd   -i "$IMG" ::/EFI/r8s
   mcopy -i "$IMG" "$DIAG_EFI" ::/EFI/r8s/R8sDiag.efi
+fi
+if [[ -f "$TRACE_EFI" ]]; then
+  mmd   -i "$IMG" ::/EFI/r8s 2>/dev/null || true
+  mcopy -i "$IMG" "$TRACE_EFI" ::/EFI/r8s/R8sTrace.efi
 fi
 mdir  -i "$IMG" -/ ::/
 

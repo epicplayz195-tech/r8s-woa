@@ -68,7 +68,8 @@ if ! command -v mkfs.fat >/dev/null || ! command -v mcopy >/dev/null; then
 fi
 SHELL_EFI="$(find "$MU/Build/r8sPkg/${TARGET}_CLANGPDB/AARCH64" -maxdepth 1 -name Shell.efi | head -n1)"
 DIAG_EFI="$(find "$MU/Build/r8sPkg/${TARGET}_CLANGPDB/AARCH64" -maxdepth 1 -name R8sDiag.efi | head -n1)"
-"$ROOT/firmware/tools/make-esp.sh" "$SHELL_EFI" "$DIAG_EFI"
+TRACE_EFI="$(find "$MU/Build/r8sPkg/${TARGET}_CLANGPDB/AARCH64" -maxdepth 1 -name R8sTrace.efi | head -n1)"
+"$ROOT/firmware/tools/make-esp.sh" "$SHELL_EFI" "$DIAG_EFI" "$TRACE_EFI"
 
 (cd "$ROOT/out" && sha256sum Mu-r8s.img Mu-r8s-odin.tar.md5 esp-r8s.img.gz | tee SHA256SUMS)
 echo "==> Done: $ROOT/out/Mu-r8s.img, $ROOT/out/Mu-r8s-odin.tar.md5"

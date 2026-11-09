@@ -1,0 +1,31 @@
+## @file
+#  r8s-woa firmware call tracer (see R8sTrace.c). DEBUG builds only.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = R8sTrace
+  FILE_GUID                      = 9E4C2B17-5D3A-4F80-B6E1-0A7C3D59F241
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = R8sTraceMain
+
+[Sources]
+  R8sTrace.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiLib
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  DebugLib
+  DevicePathLib
+  BaseMemoryLib
+
+[Protocols]
+  gEfiLoadedImageProtocolGuid
