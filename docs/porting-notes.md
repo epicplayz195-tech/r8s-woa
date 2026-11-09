@@ -48,25 +48,25 @@ with a fresh `FILE_GUID`. Windows won't boot without ACPI.
 |---|---|---|---|
 | EL2 Code 2 `0xC1400000` +2 MiB | — | added | x1s, same bootloader family |
 | S2MPU Table `0xC1800000` +3 MiB | — | added | x1s |
-| EL2 Early Memory | — | `0x9_3E800000` +24 MiB | see below |
+| EL2 Early Memory | — | `0x9_FEC00000` +20 MiB | phone's live DT `el2_earlymem` |
 | USB DRD PHY `0x10C00000`, Link `0x10E00000` | — | added | needed by UsbfnDwc3Dxe |
 | CMU HSI1 `0x13000000` | — | added | UFS clocks |
 | MSHC `0x132E0000` | — | added | microSD |
 | UFS UniPro `0x13180000` | 0x1000 | 0x8000 | x1s size |
+| Display Reserved | 0x1194000 | 0x9E4000 | exact 1080×2400×4, as in r8sios |
 | SYSREG CMGP `0x15C20000` | — | added | x1s |
 
-**EL2 Early Memory derivation.** On x1s it sits at `0xA_FE800000`. x1s has
-12 GB; its last DRAM bank is `0x8_80000000 + 0x2_80000000`, ending at
-`0xB_00000000`, so the region is "top of RAM − 0x1800000". The mainline r8s DT
-gives 6 GB with the last bank `0x8_80000000 + 0xC0000000`, top `0x9_40000000`,
-so the same rule gives **`0x9_3E800000`**. This is the single most likely thing
-to be wrong. Verify with `cat /proc/iomem` from TWRP or the S-Boot log, and use
-`0x9_BE800000` for an 8 GB unit.
+**Verified on hardware.** The DRAM ranges, EL2 early memory and display size
+come from the phone itself (r8sios `snapshot/reference/r8s`: `/proc/iomem` and
+the live device tree), and this exact map (minus r8sios's iOS-only download
+buffer at `0xF0000000`) boots to the Silicium menu on a bit-24 S20 FE.
+RAM on this unit: `0x80000000-0xBAAFFFFF`, `0xC1200000-0xDFFFFFFF`,
+`0xE1900000-0xFFFFFFFF`, `0x8_80000000-0x9_FFFFFFFF`.
 
 ## Things to verify on hardware (in order)
 
-1. UEFI reaches the Silicium menu at all (if it hangs early: EL2/S2MPU regions).
-2. Boot Manager lists UFS partitions → UfsDxe OK.
+1. UEFI reaches the Silicium menu (already shown in r8sios with the same drivers and map).
+2. Boot Manager lists UFS partitions → UfsDxe OK. r8sios's loader already reads and writes UFS through UfsDxe on this phone, so this is expected to work.
 3. microSD shows up → MshcDxe OK (lower priority).
 4. Mass Storage enumerates on the PC → DWC3 OK.
 5. WinPE boots after erasing `uh`.

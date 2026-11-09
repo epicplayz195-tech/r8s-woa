@@ -3,22 +3,14 @@
 //
 // r8s-woa memory map for the Galaxy S20 FE (r8s, SM-G780F, S5E9830).
 //
-// Base: upstream Mu-Silicium r8sPkg. Added from the working x1sPkg
-// (Galaxy S20 5G, same SoC): second EL2 code block, S2MPU table, EL2 early
-// memory, USB DRD PHY/Link, CMU HSI1, MSHC (microSD), SYSREG CMGP, and the
-// full 0x8000 UniPro window.
-//
-// DRAM on r8s (6 GB), from mainline exynos990-r8s.dts:
-//   0x0_80000000 + 0x3AB00000
-//   0x0_C1200000 + 0x1EE00000
-//   0x0_E1900000 + 0x1E700000
-//   0x8_80000000 + 0xC0000000   -> top of RAM = 0x9_40000000
-//
-// x1s (12 GB) puts "EL2 Early Memory" at 0xA_FE800000 = its top of RAM
-// minus 0x1800000. The same rule on r8s gives 0x9_3E800000.
-// VERIFY on the phone (TWRP: cat /proc/iomem, or the bootloader log) before
-// trusting it. If your unit has 8 GB, top of RAM is 0x9_C0000000 and the
-// region moves to 0x9_BE800000.
+// Base: upstream Mu-Silicium r8sPkg plus the x1s regions (second EL2 code,
+// S2MPU table, USB DRD, CMU HSI1, MSHC, SYSREG CMGP, full UniPro window).
+// DRAM, display and EL2 values are taken from the phone itself (r8sios
+// reference/r8s: /proc/iomem and the live device tree), and this layout
+// boots to the Silicium menu on a bit-24 S20 FE:
+//   System RAM 0x80000000-0xBAAFFFFF, 0xC1200000-0xDFFFFFFF,
+//              0xE1900000-0xFFFFFFFF, 0x880000000-0x9FFFFFFFF
+//   reserved-memory/el2_earlymem: reg = <0x9 0xfec00000 0x1400000>
 //
 
 STATIC
@@ -33,9 +25,10 @@ gMemoryDescriptor[] = {
   {"UEFI FD",            0xE8000000, 0x00200000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
   {"DXE Heap",           0xE8200000, 0x03C00000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK},
   {"UEFI Stack",         0xEBE00000, 0x00040000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
-  {"Display Reserved",   0xF1000000, 0x01194000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},
-  {"RAM Partition",      0xF2194000, 0x00001000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK}, // TEMP: Needed for MMU to Pass.
-  {"EL2 Early Memory",   0x93E800000,0x01800000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK}, // derived, see header
+  // Panel 1080x2400 (EA8079/S6E3FC3), 4 bytes a pixel = 0x9E3400, rounded up to a page.
+  {"Display Reserved",   0xF1000000, 0x009E4000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},
+  {"RAM Partition",      0xF19E4000, 0x00001000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK}, // TEMP: Needed for MMU to Pass.
+  {"EL2 Early Memory",   0x9FEC00000,0x01400000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK}, // live DT el2_earlymem
 
   // iRAM Regions
   {"IRAM",               0x02020000, 0x00018000, AddDev, MMAP_IO, UNCACHEABLE, MmIO,   DEVICE},
