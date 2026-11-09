@@ -44,8 +44,17 @@ or from Download mode with Odin: put `Mu-r8s-odin.tar.md5` in **AP** and start.
 It only writes BOOT.
 
 Expected: Silicium logo, then the boot menu. Check:
-1. Internal storage is listed (UfsDxe works).
-2. **Mass Storage** with the USB cable in: the phone's partitions appear on the PC.
+1. Internal storage is listed (UfsDxe found the controller and the GPT).
+2. Start **Mass Storage**, plug into the PC. If Windows offers to
+   **Initialize** or **Format** a disk, click **Cancel** every time.
+3. In an elevated PowerShell:
+   ```powershell
+   cd D:\woa\r8s-woa\tools\windows
+   .\Test-PhoneStorage.ps1
+   ```
+   Read-only. It reads the GPT at both ends of the disk, re-reads 16 MiB at
+   the start/middle/end and compares, and lists the partitions by name.
+   All `[OK]` = UFS reads work across the whole disk through the UEFI.
 
 If it hangs, note the last screen and see `porting-notes.md`.
 

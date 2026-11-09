@@ -44,6 +44,7 @@ Details and the things to verify on hardware: [docs/porting-notes.md](docs/porti
 | `.github/workflows/build-uefi.yml` | GitHub Actions build: `Mu-r8s.img` + an Odin tar (AP) |
 | `tools/device/` | PowerShell + adb scripts run against TWRP: backup, erase `uh`, partition, flash UEFI |
 | `tools/windows/Build-WinPE.ps1` | Make ARM64 WinPE media from a 23H2 ISO (or the ADK) |
+| `tools/windows/Test-PhoneStorage.ps1` | Read-only check that UFS works over UEFI Mass Storage |
 | `tools/windows/Deploy-Windows.ps1` | Apply Windows/WinPE over UEFI Mass Storage |
 | `drivers/` | Windows driver work for Exynos 990 (plans + hardware tables, no code yet) |
 | `docs/` | Install guide, porting notes, driver plan |
