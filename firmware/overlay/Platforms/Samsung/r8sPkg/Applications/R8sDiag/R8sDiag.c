@@ -311,8 +311,8 @@ TestBlockIo (
 // and never returns, the phone hangs right after the line naming it.
 //
 #define SYSREG_RW(Name)                                                          \
-  STATIC UINT64 Read_##Name (VOID) { UINT64 V; __asm__ __volatile__ ("mrs %0, " #Name : "=r" (V)); return V; } \
-  STATIC VOID Write_##Name (UINT64 V) { __asm__ __volatile__ ("msr " #Name ", %0\n isb" : : "r" (V) : "memory"); }
+  STATIC __attribute__ ((unused)) UINT64 Read_##Name (VOID) { UINT64 V; __asm__ __volatile__ ("mrs %0, " #Name : "=r" (V)); return V; } \
+  STATIC __attribute__ ((unused)) VOID Write_##Name (UINT64 V) { __asm__ __volatile__ ("msr " #Name ", %0\n isb" : : "r" (V) : "memory"); }
 
 SYSREG_RW (ttbr0_el1)
 SYSREG_RW (ttbr1_el1)
