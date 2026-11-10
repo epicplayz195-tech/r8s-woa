@@ -17,6 +17,7 @@
 #include <Library/BaseMemoryLib.h>
 #include <Library/ArmLib.h>
 #include <Library/ArmGenericTimerCounterLib.h>
+#include <Library/CacheMaintenanceLib.h>
 #include <Protocol/Rng.h>
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/BlockIo.h>
@@ -32,6 +33,7 @@
 // line, so the results can be pulled from TWRP even after a hang.
 //
 STATIC EFI_FILE_PROTOCOL  *mLog;
+STATIC EFI_HANDLE         mDevice;   // ESP partition (set by LogOpen)
 
 STATIC
 VOID
@@ -77,6 +79,7 @@ LogOpen (
   EFI_FILE_PROTOCOL                *File;
 
   if (EFI_ERROR (gBS->HandleProtocol (ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **)&Self)) ||
+      ((mDevice = Self->DeviceHandle) == NULL) ||
       EFI_ERROR (gBS->HandleProtocol (Self->DeviceHandle, &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs)) ||
       EFI_ERROR (Fs->OpenVolume (Fs, &Root)))
   {
@@ -304,6 +307,154 @@ TestBlockIo (
   if (!EFI_ERROR (Status)) {
     FreePool (Handles);
   }
+}
+
+//
+// Disk read integrity. Windows Boot Manager reads the whole 450 MB boot.wim
+// with big BlockIo reads into memory at 0x83E80000 and then can't find
+// winload.efi in it. Read the same 16 MiB of the ESP with small (reference)
+// and big reads, into several addresses, and compare. Mismatches tell
+// whether big transfers or certain DMA addresses come back wrong, and
+// "still 0xA5" means the data never reached that memory at all.
+//
+#define DISK_TEST_SIZE    SIZE_16MB
+#define DISK_TEST_OFFSET  SIZE_128MB      // inside boot.wim on our ESP layout
+
+STATIC
+VOID
+DiskCompare (
+  IN EFI_BLOCK_IO_PROTOCOL  *Bio,
+  IN EFI_LBA                Lba,
+  IN CONST UINT8            *Ref,
+  IN CONST CHAR16           *Where,
+  IN EFI_ALLOCATE_TYPE      Type,
+  IN EFI_PHYSICAL_ADDRESS   Want,
+  IN UINTN                  Chunk
+  )
+{
+  EFI_STATUS            Status;
+  EFI_PHYSICAL_ADDRESS  Addr;
+  UINT8                 *Buf;
+  UINTN                 Off;
+  UINTN                 Bad;
+  UINTN                 Still;
+  UINTN                 Zero;
+  UINTN                 First;
+  UINT64                T0;
+  UINT64                T1;
+  UINT64                Freq;
+
+  LogPrint (L"    %-10s chunk %5d KB  ", Where, (UINT32)(Chunk / 1024));
+  Addr   = Want;
+  Status = gBS->AllocatePages (Type, EfiLoaderData, EFI_SIZE_TO_PAGES (DISK_TEST_SIZE), &Addr);
+  if (EFI_ERROR (Status)) {
+    LogPrint (L"alloc %r\n", Status);
+    return;
+  }
+
+  Buf = (UINT8 *)(UINTN)Addr;
+  SetMem (Buf, DISK_TEST_SIZE, 0xA5);
+  WriteBackDataCacheRange (Buf, DISK_TEST_SIZE);
+
+  T0 = ArmGenericTimerGetSystemCount ();
+  for (Off = 0, Status = EFI_SUCCESS; Off < DISK_TEST_SIZE && !EFI_ERROR (Status); Off += Chunk) {
+    Status = Bio->ReadBlocks (Bio, Bio->Media->MediaId, Lba + Off / Bio->Media->BlockSize, Chunk, Buf + Off);
+  }
+
+  T1   = ArmGenericTimerGetSystemCount ();
+  Freq = ArmGenericTimerGetTimerFreq ();
+
+  Bad = Still = Zero = 0;
+  First = MAX_UINTN;
+  for (Off = 0; Off < DISK_TEST_SIZE; Off++) {
+    if (Buf[Off] != Ref[Off]) {
+      Bad++;
+      Still += (Buf[Off] == 0xA5);
+      Zero  += (Buf[Off] == 0);
+      if (First == MAX_UINTN) {
+        First = Off;
+      }
+    }
+  }
+
+  LogPrint (L"at 0x%09lx  %r  %ld ms  ", Addr, Status, (Freq != 0) ? (T1 - T0) * 1000 / Freq : 0);
+  if (Bad == 0) {
+    LogPrint (L"MATCH\n");
+  } else {
+    LogPrint (L"%ld BAD bytes (first at 0x%lx; still 0xA5 %ld, zero %ld)\n", Bad, First, Still, Zero);
+  }
+
+  gBS->FreePages (Addr, EFI_SIZE_TO_PAGES (DISK_TEST_SIZE));
+}
+
+STATIC
+VOID
+TestDiskReads (
+  VOID
+  )
+{
+  EFI_STATUS             Status;
+  EFI_BLOCK_IO_PROTOCOL  *Bio;
+  UINT8                  *Ref;
+  EFI_LBA                Lba;
+  UINTN                  Off;
+  UINTN                  NonZero;
+  UINTN                  Bs;
+
+  LogPrint (L"Disk reads (big reads / DMA addresses vs 4 KB reference)\n");
+  if ((mDevice == NULL) ||
+      EFI_ERROR (gBS->HandleProtocol (mDevice, &gEfiBlockIoProtocolGuid, (VOID **)&Bio)))
+  {
+    LogPrint (L"    no BlockIo on the ESP handle\n");
+    return;
+  }
+
+  Bs = Bio->Media->BlockSize;
+  LogPrint (L"    ESP: block %d, last LBA 0x%lx, IoAlign %d, removable %d\n",
+            (UINT32)Bs, Bio->Media->LastBlock, Bio->Media->IoAlign, Bio->Media->RemovableMedia);
+  Lba = DISK_TEST_OFFSET / Bs;
+  if ((Lba + DISK_TEST_SIZE / Bs) > Bio->Media->LastBlock) {
+    Lba = 0;
+  }
+
+  Ref = AllocatePages (EFI_SIZE_TO_PAGES (DISK_TEST_SIZE));
+  if (Ref == NULL) {
+    LogPrint (L"    no memory\n");
+    return;
+  }
+
+  for (Off = 0, Status = EFI_SUCCESS; Off < DISK_TEST_SIZE && !EFI_ERROR (Status); Off += Bs) {
+    Status = Bio->ReadBlocks (Bio, Bio->Media->MediaId, Lba + Off / Bs, Bs, Ref + Off);
+  }
+
+  for (Off = 0, NonZero = 0; Off < DISK_TEST_SIZE; Off++) {
+    NonZero += (Ref[Off] != 0);
+  }
+
+  LogPrint (L"    reference (4 KB reads) at 0x%lx, LBA 0x%lx: %r, %ld nonzero bytes\n",
+            (UINT64)(UINTN)Ref, Lba, Status, NonZero);
+  if (EFI_ERROR (Status)) {
+    FreePages (Ref, EFI_SIZE_TO_PAGES (DISK_TEST_SIZE));
+    return;
+  }
+
+  // Same small reads again: tells apart "reads are flaky" from "big reads break".
+  DiskCompare (Bio, Lba, Ref, L"any", AllocateAnyPages, 0, Bs);
+  DiskCompare (Bio, Lba, Ref, L"any", AllocateAnyPages, 0, SIZE_64KB);
+  DiskCompare (Bio, Lba, Ref, L"any", AllocateAnyPages, 0, SIZE_256KB);
+  DiskCompare (Bio, Lba, Ref, L"any", AllocateAnyPages, 0, SIZE_1MB);
+  DiskCompare (Bio, Lba, Ref, L"any", AllocateAnyPages, 0, SIZE_4MB);
+  DiskCompare (Bio, Lba, Ref, L"any", AllocateAnyPages, 0, DISK_TEST_SIZE);
+  // Where Boot Manager puts the ramdisk, other low RAM, and RAM above 4 GB.
+  DiskCompare (Bio, Lba, Ref, L"0x83E80000", AllocateAddress, 0x83E80000, Bs);
+  DiskCompare (Bio, Lba, Ref, L"0x83E80000", AllocateAddress, 0x83E80000, SIZE_1MB);
+  DiskCompare (Bio, Lba, Ref, L"0x83E80000", AllocateAddress, 0x83E80000, DISK_TEST_SIZE);
+  DiskCompare (Bio, Lba, Ref, L"0x9AB00000", AllocateAddress, 0x9AB00000, DISK_TEST_SIZE);
+  DiskCompare (Bio, Lba, Ref, L"0xC2000000", AllocateAddress, 0xC2000000, DISK_TEST_SIZE);
+  DiskCompare (Bio, Lba, Ref, L"0x880000000", AllocateAddress, 0x880000000ULL, Bs);
+  DiskCompare (Bio, Lba, Ref, L"0x880000000", AllocateAddress, 0x880000000ULL, DISK_TEST_SIZE);
+
+  FreePages (Ref, EFI_SIZE_TO_PAGES (DISK_TEST_SIZE));
 }
 
 //
@@ -655,6 +806,7 @@ R8sDiagMain (
   TestGraphics ();
   TestMemory ();
   TestBlockIo ();
+  TestDiskReads ();
   TestLowMemory ();
   TestSysRegs ();
   TestPmu ();
