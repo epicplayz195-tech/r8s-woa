@@ -321,6 +321,69 @@ SYSREG_RW (mair_el1)
 SYSREG_RW (sctlr_el1)
 SYSREG_RW (vbar_el1)
 SYSREG_RW (contextidr_el1)
+SYSREG_RW (pmcr_el0)
+SYSREG_RW (pmcntenclr_el0)
+SYSREG_RW (pmcntenset_el0)
+SYSREG_RW (pmovsclr_el0)
+SYSREG_RW (pmintenclr_el1)
+SYSREG_RW (pmccfiltr_el0)
+SYSREG_RW (pmuserenr_el0)
+SYSREG_RW (pmccntr_el0)
+SYSREG_RW (cpacr_el1)
+
+STATIC UINT64 Read_id_aa64dfr0_el1 (VOID) { UINT64 V; __asm__ __volatile__ ("mrs %0, id_aa64dfr0_el1" : "=r" (V)); return V; }
+
+//
+// Windows Boot Manager's BlpArchInitialize (bootmgfw 22621.1, rva 0x168838)
+// programs the PMU right after its page allocator grabs memory and before
+// its next firmware call. Replay that exact sequence, logging before every
+// access, so a trapped/hanging PMU access names itself in r8s-diag.txt.
+//
+#define PMU_STEP(Text, Stmt)                         \
+  do {                                               \
+    LogPrint (L"    %-40a", Text);                   \
+    Stmt;                                            \
+    LogPrint (L"OK\n");                              \
+  } while (0)
+
+STATIC
+VOID
+TestPmu (
+  VOID
+  )
+{
+  UINT64  Dfr0;
+  UINT64  Pmcr;
+  UINT64  V;
+  UINT64  C1;
+  UINT64  C2;
+
+  Dfr0 = Read_id_aa64dfr0_el1 ();
+  LogPrint (L"PMU (Boot Manager's exact sequence)  ID_AA64DFR0 0x%lx, PMUVer %d\n", Dfr0, (UINT32)((Dfr0 >> 8) & 0xF));
+
+  Pmcr = 0;
+  PMU_STEP ("read PMCR_EL0", Pmcr = Read_pmcr_el0 ());
+  LogPrint (L"    PMCR_EL0 = 0x%lx\n", Pmcr);
+
+  V = Pmcr | 0x10;
+  if ((V & 1) == 0) {
+    V |= 5;
+    PMU_STEP ("write PMCNTENCLR_EL0 = 0xffffffff", Write_pmcntenclr_el0 (0xFFFFFFFF));
+    PMU_STEP ("write PMOVSCLR_EL0 = 0xffffffff", Write_pmovsclr_el0 (0xFFFFFFFF));
+    PMU_STEP ("write PMINTENCLR_EL1 = 0xffffffff", Write_pmintenclr_el1 (0xFFFFFFFF));
+  }
+
+  PMU_STEP ("write PMCR_EL0", Write_pmcr_el0 (V & ~0x20ULL));
+  PMU_STEP ("write PMCCFILTR_EL0 = 0x8000000", Write_pmccfiltr_el0 (0x8000000));
+  PMU_STEP ("write PMCNTENSET_EL0 = 0x80000000", Write_pmcntenset_el0 (0x80000000));
+  PMU_STEP ("write PMUSERENR_EL0 = 0", Write_pmuserenr_el0 (0));
+  PMU_STEP ("read/write CPACR_EL1 |= 0x300000", Write_cpacr_el1 (Read_cpacr_el1 () | 0x300000));
+
+  C1 = 0;
+  C2 = 0;
+  PMU_STEP ("read PMCCNTR_EL0 twice (1 ms apart)", C1 = Read_pmccntr_el0 (); gBS->Stall (1000); C2 = Read_pmccntr_el0 ());
+  LogPrint (L"    cycle counter %lx -> %lx (%a)\n", C1, C2, (C2 != C1) ? "counting" : "NOT counting");
+}
 
 #define TEST_SYSREG(Name)                                             \
   do {                                                                \
@@ -435,6 +498,7 @@ R8sDiagMain (
   TestBlockIo ();
   TestLowMemory ();
   TestSysRegs ();
+  TestPmu ();
 
   LogPrint (L"=== self-test finished: no hang ===\n\n");
   if (mLog != NULL) {
