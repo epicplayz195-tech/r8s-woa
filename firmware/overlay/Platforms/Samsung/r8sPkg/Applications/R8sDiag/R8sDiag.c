@@ -261,6 +261,16 @@ TestMemory (
     }
   }
 
+  // Full map: Boot Manager builds its page tables from these types/attributes.
+  LogPrint (L"    --- memory map (type, start, end, pages, attributes) ---\n");
+  for (Index = 0; Index < MapSize / DescSize; Index++) {
+    Desc = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + Index * DescSize);
+    LogPrint (L"    %2d  %2d  %09lx-%09lx  %8lx  %016lx\n",
+              (UINT32)Index, (UINT32)Desc->Type, Desc->PhysicalStart,
+              Desc->PhysicalStart + EFI_PAGES_TO_SIZE (Desc->NumberOfPages) - 1,
+              Desc->NumberOfPages, Desc->Attribute);
+  }
+
   LogPrint (L"    free RAM %ld MB, largest free block %ld MB, %d entries\n",
          Total * EFI_PAGE_SIZE / 0x100000, Largest * EFI_PAGE_SIZE / 0x100000, (UINT32)(MapSize / DescSize));
   FreePool (Map);
