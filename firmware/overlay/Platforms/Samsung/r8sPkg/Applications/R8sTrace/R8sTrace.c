@@ -28,6 +28,7 @@
 #include <Library/PrintLib.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
+#include <Protocol/GraphicsOutput.h>
 #include <Guid/FileInfo.h>
 
 STATIC EFI_BOOT_SERVICES     mBs;     // copy of the original tables
@@ -202,6 +203,93 @@ LogClose (
   }
 
   mLog = NULL;
+}
+
+//
+// Heartbeat: a 1-second timer event that draws straight into the
+// framebuffer. Top-right square flips green/red each second; a bar along
+// the bottom grows one step per second. If it keeps going while Boot
+// Manager "hangs", the firmware's timer interrupt still runs (Boot Manager
+// is busy or waiting); if it stops, interrupts are off or the CPU is wedged.
+//
+STATIC EFI_EVENT  mBeat;
+STATIC UINT32     *mFb;
+STATIC UINT32     mFbW;
+STATIC UINT32     mFbH;
+STATIC UINT32     mFbStride;
+STATIC UINTN      mTicks;
+
+STATIC
+VOID
+FillRect (
+  UINT32  X,
+  UINT32  Y,
+  UINT32  W,
+  UINT32  H,
+  UINT32  Color
+  )
+{
+  UINT32  Row;
+  UINT32  Col;
+
+  for (Row = Y; Row < Y + H && Row < mFbH; Row++) {
+    for (Col = X; Col < X + W && Col < mFbW; Col++) {
+      mFb[Row * mFbStride + Col] = Color;
+    }
+  }
+}
+
+STATIC
+VOID
+EFIAPI
+Heartbeat (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  UINT32  Step;
+  UINT32  Lap;
+
+  mTicks++;
+  FillRect (mFbW - 200, 60, 160, 160, (mTicks & 1) ? 0x0000FF00 : 0x00FF0000);
+
+  Step = 24;
+  Lap  = (UINT32)((mTicks * Step) / mFbW);
+  FillRect ((UINT32)((mTicks * Step) % mFbW), mFbH - 90, Step - 4, 60, (Lap & 1) ? 0x00FFFF00 : 0x0000FFFF);
+}
+
+STATIC
+VOID
+HeartbeatStart (
+  VOID
+  )
+{
+  EFI_GRAPHICS_OUTPUT_PROTOCOL  *Gop;
+
+  if (EFI_ERROR (gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID **)&Gop))) {
+    return;
+  }
+
+  mFb       = (UINT32 *)(UINTN)Gop->Mode->FrameBufferBase;
+  mFbW      = Gop->Mode->Info->HorizontalResolution;
+  mFbH      = Gop->Mode->Info->VerticalResolution;
+  mFbStride = Gop->Mode->Info->PixelsPerScanLine;
+
+  if (!EFI_ERROR (gBS->CreateEvent (EVT_TIMER | EVT_NOTIFY_SIGNAL, TPL_NOTIFY, Heartbeat, NULL, &mBeat))) {
+    gBS->SetTimer (mBeat, TimerPeriodic, 10000000);   // 1 s
+  }
+}
+
+STATIC
+VOID
+HeartbeatStop (
+  VOID
+  )
+{
+  if (mBeat != NULL) {
+    mBs.CloseEvent (mBeat);
+    mBeat = NULL;
+  }
 }
 
 STATIC
@@ -437,6 +525,7 @@ TExitBootServices (EFI_HANDLE Image, UINTN MapKey)
 {
   EMIT ("T> ExitBootServices key 0x%lx (tracer off, log closed)\n", (UINT64)MapKey);
   LogClose ();
+  HeartbeatStop ();
   RestoreTables ();
   return gBS->ExitBootServices (Image, MapKey);
 }
@@ -662,6 +751,7 @@ R8sTraceMain (
   }
 
   LogOpen (Self->DeviceHandle);
+  HeartbeatStart ();
   InstallTracer ();
   mActive = TRUE;
   EMIT ("T> tracer on\n");
@@ -680,6 +770,7 @@ R8sTraceMain (
   }
 
   EMIT ("T> Boot Manager returned: %r\n", Status);
+  HeartbeatStop ();
   RestoreTables ();
   LogClose ();
   Print (L"\nBoot Manager returned: %r\n", Status);
