@@ -27,8 +27,11 @@
   DevicePathLib
   BaseMemoryLib
   PrintLib
+  CacheMaintenanceLib
+  MemoryAllocationLib
 
 [Protocols]
   gEfiLoadedImageProtocolGuid
   gEfiSimpleFileSystemProtocolGuid
   gEfiGraphicsOutputProtocolGuid
+  gEfiMemoryAttributeProtocolGuid

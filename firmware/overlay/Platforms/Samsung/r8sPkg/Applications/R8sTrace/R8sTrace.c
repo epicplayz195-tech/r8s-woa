@@ -29,6 +29,9 @@
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/GraphicsOutput.h>
+#include <Protocol/MemoryAttribute.h>
+#include <Library/CacheMaintenanceLib.h>
+#include <Library/MemoryAllocationLib.h>
 #include <Guid/FileInfo.h>
 
 STATIC EFI_BOOT_SERVICES     mBs;     // copy of the original tables
@@ -290,6 +293,135 @@ HeartbeatStop (
     mBs.CloseEvent (mBeat);
     mBeat = NULL;
   }
+}
+
+//
+// Breadcrumbs inside Boot Manager. Boot Manager hangs between two firmware
+// calls, inside BlpMmInitialize, where the tracer cannot see. For the exact
+// bootmgfw build in our WinPE (22621.1, PDB GUID EB6298F7-0E4F-53A4-F859-
+// F553FA1960AA), patch the first instruction of a few functions with a branch
+// to a trampoline that paints a 100x100 square into the framebuffer, runs the
+// displaced instruction and branches back. Squares sit along the bottom of
+// the screen in call order; the last one painted shows how far it got.
+// Every patched instruction is checked first; on any mismatch nothing is
+// patched.
+//
+typedef struct {
+  CONST CHAR8  *Name;
+  UINT32       Rva;
+  UINT32       Expect;      // original first instruction
+  UINT32       Color;
+} CRUMB;
+
+STATIC CONST CRUMB  mCrumbs[] = {
+  { "MmPaInitialize (before the 0x80000000 request)", 0x0D6D78, 0xA9BC53F3, 0x0000FF00 },
+  { "BlMmRemoveBadMemory",                           0x0D6A60, 0xA9BE53F3, 0x00FFFFFF },
+  { "MmTrInitialize",                                0x0D8DE8, 0xA9BC53F3, 0x00FFFFFF },
+  { "MmHapHeapAllocatorExtend",                      0x0D5DF0, 0xA9BE53F3, 0x00FFFFFF },
+  { "MmMdInitialize",                                0x0DAA70, 0xA9BE53F3, 0x00FFFFFF },
+  { "BlUtlGetAcpiTable",                             0x0B7A98, 0xA9BC53F3, 0x00FFFFFF },
+};
+
+// stp x14,x15,[sp,#-32]!; stp x16,x17,[sp,#16]; ldr x16,addr; ldr x17,color;
+// ldr x14,stride; mov x15,#100; 25 x stp x17,x17,[x16,#n*16]; add x16,x16,x14;
+// subs x15,x15,#1; b.ne row; dsb sy; ldp x16,x17,[sp,#16]; ldp x14,x15,[sp],#32;
+// <displaced>; b back; .quad addr; .quad color; .quad stride
+STATIC CONST UINT32  mTramp[45] = {
+  0xA9BE3FEE, 0xA90147F0, 0x580004B0, 0x580004D1, 0x580004EE, 0xD2800C8F, 0xA9004611, 0xA9014611,
+  0xA9024611, 0xA9034611, 0xA9044611, 0xA9054611, 0xA9064611, 0xA9074611, 0xA9084611, 0xA9094611,
+  0xA90A4611, 0xA90B4611, 0xA90C4611, 0xA90D4611, 0xA90E4611, 0xA90F4611, 0xA9104611, 0xA9114611,
+  0xA9124611, 0xA9134611, 0xA9144611, 0xA9154611, 0xA9164611, 0xA9174611, 0xA9184611, 0x8B0E0210,
+  0xF10005EF, 0x54FFFCA1, 0xD5033F9F, 0xA94147F0, 0xA8C23FEE, 0xD503201F, 0xD503201F, 0, 0, 0, 0, 0, 0
+};
+#define TRAMP_DISPLACED  37
+#define TRAMP_BACK       38
+#define TRAMP_ADDR       39
+#define TRAMP_COLOR      41
+#define TRAMP_STRIDE     43
+#define TRAMP_SLOT       64            // words per trampoline (256 bytes)
+
+STATIC
+UINT32
+EncodeB (
+  UINT64  From,
+  UINT64  To
+  )
+{
+  INT64  Off = ((INT64)To - (INT64)From) / 4;
+
+  return 0x14000000 | ((UINT32)Off & 0x03FFFFFF);
+}
+
+STATIC
+VOID
+InstallCrumbs (
+  IN UINT64  ImageBase,
+  IN UINT64  ImageSize
+  )
+{
+  EFI_STATUS                     Status;
+  EFI_MEMORY_ATTRIBUTE_PROTOCOL  *MemAttr;
+  EFI_PHYSICAL_ADDRESS           Tramp;
+  UINT32                         *Code;
+  UINT32                         *T;
+  UINT64                         Square;
+  UINTN                          Index;
+
+  if (mFb == NULL) {
+    EMIT ("T> crumbs: no framebuffer\n");
+    return;
+  }
+
+  if (ImageSize != 0x1F8000) {
+    EMIT ("T> crumbs: Boot Manager size 0x%lx is not the 22621.1 build, skipped\n", ImageSize);
+    return;
+  }
+
+  for (Index = 0; Index < ARRAY_SIZE (mCrumbs); Index++) {
+    if (*(UINT32 *)(UINTN)(ImageBase + mCrumbs[Index].Rva) != mCrumbs[Index].Expect) {
+      EMIT ("T> crumbs: %a has 0x%x, expected 0x%x; skipped\n", mCrumbs[Index].Name,
+            *(UINT32 *)(UINTN)(ImageBase + mCrumbs[Index].Rva), mCrumbs[Index].Expect);
+      return;
+    }
+  }
+
+  // Trampolines must be within +-128 MB of the patched code (B range).
+  Tramp  = ImageBase + 0x7000000;
+  Status = gBS->AllocatePages (AllocateMaxAddress, EfiLoaderCode, 1, &Tramp);
+  if (EFI_ERROR (Status) || (Tramp + 0x8000000 < ImageBase)) {
+    EMIT ("T> crumbs: no trampoline page (%r)\n", Status);
+    return;
+  }
+
+  // Image code is mapped read-only by the firmware's memory protection.
+  if (!EFI_ERROR (gBS->LocateProtocol (&gEfiMemoryAttributeProtocolGuid, NULL, (VOID **)&MemAttr))) {
+    Status = MemAttr->ClearMemoryAttributes (MemAttr, ImageBase, ALIGN_VALUE (ImageSize, EFI_PAGE_SIZE), EFI_MEMORY_RO);
+    EMIT ("T> crumbs: image RO cleared: %r\n", Status);
+    MemAttr->ClearMemoryAttributes (MemAttr, Tramp, EFI_PAGE_SIZE, EFI_MEMORY_RO | EFI_MEMORY_XP);
+  } else {
+    EMIT ("T> crumbs: no memory attribute protocol, trying anyway\n");
+  }
+
+  for (Index = 0; Index < ARRAY_SIZE (mCrumbs); Index++) {
+    Code   = (UINT32 *)(UINTN)(ImageBase + mCrumbs[Index].Rva);
+    T      = (UINT32 *)(UINTN)Tramp + Index * TRAMP_SLOT;
+    Square = (UINT64)(UINTN)mFb + ((UINT64)(mFbH - 400) * mFbStride + 40 + Index * 170) * 4;
+
+    CopyMem (T, mTramp, sizeof (mTramp));
+    T[TRAMP_DISPLACED] = mCrumbs[Index].Expect;
+    T[TRAMP_BACK]      = EncodeB ((UINT64)(UINTN)&T[TRAMP_BACK], (UINT64)(UINTN)(Code + 1));
+    *(UINT64 *)&T[TRAMP_ADDR]   = Square;
+    *(UINT64 *)&T[TRAMP_COLOR]  = ((UINT64)mCrumbs[Index].Color << 32) | mCrumbs[Index].Color;
+    *(UINT64 *)&T[TRAMP_STRIDE] = (UINT64)mFbStride * 4;
+
+    *Code = EncodeB ((UINT64)(UINTN)Code, (UINT64)(UINTN)T);
+    WriteBackDataCacheRange (Code, 4);
+    InvalidateInstructionCacheRange (Code, 4);
+    EMIT ("T> crumb %d: %a\n", (UINT32)(Index + 1), mCrumbs[Index].Name);
+  }
+
+  WriteBackDataCacheRange ((VOID *)(UINTN)Tramp, EFI_PAGE_SIZE);
+  InvalidateInstructionCacheRange ((VOID *)(UINTN)Tramp, EFI_PAGE_SIZE);
 }
 
 STATIC
@@ -764,6 +896,7 @@ R8sTraceMain (
     if (!EFI_ERROR (gBS->HandleProtocol (Child, &gEfiLoadedImageProtocolGuid, (VOID **)&Img))) {
       AddRange ((UINT64)(UINTN)Img->ImageBase, Img->ImageSize);
       EMIT ("T> Boot Manager image at 0x%lx size 0x%lx\n", (UINT64)(UINTN)Img->ImageBase, Img->ImageSize);
+      InstallCrumbs ((UINT64)(UINTN)Img->ImageBase, Img->ImageSize);
     }
 
     Status = gBS->StartImage (Child, NULL, NULL);
