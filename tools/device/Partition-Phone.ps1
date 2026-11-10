@@ -50,6 +50,10 @@ function Get-Slice([byte[]]$b, [int]$o, [int]$n) { $r = [byte[]]::new($n); [Arra
 
 function Read-Header([byte[]]$Block) {
     $hsz = [int](Get-U32 $Block 12)
+    if ($hsz -lt 92 -or $hsz -gt $Block.Length) {
+        return [pscustomobject]@{ Sig = [Text.Encoding]::ASCII.GetString($Block, 0, 8); Size = $hsz; CrcOk = $false;
+                                  MyLba = 0; AltLba = 0; EntLba = 0; EntCount = 0; EntSize = 0; EntCrc = 0 }
+    }
     $tmp = Get-Slice $Block 0 $hsz
     Set-Bytes $tmp 16 ([byte[]]::new(4))
     [pscustomobject]@{
@@ -133,14 +137,28 @@ if ((Get-Crc32 $entries 0 $entBytesLen) -ne $ph.EntCrc) { throw "Primary GPT ent
 $bArea = Pull-Sectors $disk ($ph.AltLba - $entBlocks) ($entBlocks + 1) $ss (Join-Path $Scratch "gpt_backup_area.bin")
 $bHdrBlock = Get-Slice $bArea ($entBlocks * $ss) $ss
 $bh = Read-Header $bHdrBlock
-if ($bh.Sig -ne "EFI PART" -or -not $bh.CrcOk -or $bh.MyLba -ne $ph.AltLba) { throw "Backup GPT header is not valid." }
-if ($bh.EntLba -ne ($ph.AltLba - $entBlocks)) { throw "Backup entries are not where expected (LBA $($bh.EntLba))." }
-$bEntries = Get-Slice $bArea 0 ($entBlocks * $ss)
-if ((Get-Crc32 $bEntries 0 $entBytesLen) -ne $bh.EntCrc) { throw "Backup GPT entries CRC mismatch." }
-if ([Convert]::ToBase64String($bEntries, 0, $entBytesLen) -ne [Convert]::ToBase64String($entries, 0, $entBytesLen)) {
-    throw "Primary and backup GPT entries differ. Not touching this disk."
+$backupEmpty = -not ($bArea | Where-Object { $_ -ne 0 } | Select-Object -First 1)
+if ($bh.Sig -ne "EFI PART" -and $backupEmpty) {
+    # Backup copy wiped (all zeros) but the primary is valid: rebuild the backup
+    # from the primary, as any GPT tool does. Same entries; header points back.
+    Write-Warning "Backup GPT at the end of the disk is empty (wiped). It will be rebuilt from the valid primary."
+    $bHdrBlock = Get-Slice $pHdrBlock 0 $ss
+    Set-Bytes $bHdrBlock 24 ([BitConverter]::GetBytes([uint64]$ph.AltLba))
+    Set-Bytes $bHdrBlock 32 ([BitConverter]::GetBytes([uint64]1))
+    Set-Bytes $bHdrBlock 72 ([BitConverter]::GetBytes([uint64]($ph.AltLba - $entBlocks)))
+    $bh = [pscustomobject]@{ Sig = "EFI PART"; Size = $ph.Size; CrcOk = $true; MyLba = $ph.AltLba; AltLba = 1;
+                             EntLba = [uint64]($ph.AltLba - $entBlocks); EntCount = $ph.EntCount; EntSize = $ph.EntSize; EntCrc = $ph.EntCrc }
+    Write-Host "GPT: primary valid ($($ph.EntCount) slots); backup will be recreated at LBA $($ph.AltLba)"
+} else {
+    if ($bh.Sig -ne "EFI PART" -or -not $bh.CrcOk -or $bh.MyLba -ne $ph.AltLba) { throw "Backup GPT header is not valid (and not empty). Not touching this disk." }
+    if ($bh.EntLba -ne ($ph.AltLba - $entBlocks)) { throw "Backup entries are not where expected (LBA $($bh.EntLba))." }
+    $bEntries = Get-Slice $bArea 0 ($entBlocks * $ss)
+    if ((Get-Crc32 $bEntries 0 $entBytesLen) -ne $bh.EntCrc) { throw "Backup GPT entries CRC mismatch." }
+    if ([Convert]::ToBase64String($bEntries, 0, $entBytesLen) -ne [Convert]::ToBase64String($entries, 0, $entBytesLen)) {
+        throw "Primary and backup GPT entries differ. Not touching this disk."
+    }
+    Write-Host "GPT OK: both copies valid and identical, $($ph.EntCount) slots, backup at LBA $($ph.AltLba)"
 }
-Write-Host "GPT OK: both copies valid and identical, $($ph.EntCount) slots, backup at LBA $($ph.AltLba)"
 
 # --------------------------------------------------------- 3. new layout --
 $ui = $num - 1; $uo = $ui * 128
