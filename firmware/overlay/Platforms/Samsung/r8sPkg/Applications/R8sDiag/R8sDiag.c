@@ -21,10 +21,80 @@
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/BlockIo.h>
 #include <Guid/GlobalVariable.h>
+#include <Library/PrintLib.h>
+#include <Protocol/LoadedImage.h>
+#include <Protocol/SimpleFileSystem.h>
+
+//
+// Everything printed also goes to \r8s-diag.txt on the ESP, flushed per
+// line, so the results can be pulled from TWRP even after a hang.
+//
+STATIC EFI_FILE_PROTOCOL  *mLog;
+
+STATIC
+VOID
+LogPrint (
+  IN CONST CHAR16  *Format,
+  ...
+  )
+{
+  VA_LIST  Args;
+  CHAR16   Line[256];
+  CHAR8    Ascii[256];
+  UINTN    Size;
+  UINTN    Index;
+
+  VA_START (Args, Format);
+  UnicodeVSPrint (Line, sizeof (Line), Format, Args);
+  VA_END (Args);
+
+  Print (L"%s", Line);
+  if (mLog == NULL) {
+    return;
+  }
+
+  for (Index = 0; Line[Index] != 0 && Index < ARRAY_SIZE (Ascii) - 1; Index++) {
+    Ascii[Index] = (Line[Index] < 0x80) ? (CHAR8)Line[Index] : '?';
+  }
+
+  Ascii[Index] = 0;
+  Size         = Index;
+  mLog->Write (mLog, &Size, Ascii);
+  mLog->Flush (mLog);
+}
+
+STATIC
+VOID
+LogOpen (
+  IN EFI_HANDLE  ImageHandle
+  )
+{
+  EFI_LOADED_IMAGE_PROTOCOL        *Self;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+
+  if (EFI_ERROR (gBS->HandleProtocol (ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **)&Self)) ||
+      EFI_ERROR (gBS->HandleProtocol (Self->DeviceHandle, &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs)) ||
+      EFI_ERROR (Fs->OpenVolume (Fs, &Root)))
+  {
+    return;
+  }
+
+  if (!EFI_ERROR (Root->Open (Root, &File, L"\\r8s-diag.txt", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0))) {
+    File->Delete (File);
+  }
+
+  if (EFI_ERROR (Root->Open (Root, &mLog, L"\\r8s-diag.txt", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0))) {
+    mLog = NULL;
+  }
+
+  Root->Close (Root);
+}
 
 STATIC EFI_GUID mTestVarGuid = { 0x6a1f3c2e, 0x8b4d, 0x4e7a, { 0x9c, 0x51, 0x2d, 0x7e, 0x33, 0x10, 0xa8, 0x5f } };
 
-#define STEP(Name)  Print (L"%-34s ... ", Name)
+#define STEP(Name)  LogPrint (L"%-34s ... ", Name)
 
 STATIC
 VOID
@@ -37,17 +107,17 @@ TestTimer (
   UINT64  After;
 
   STEP (L"CurrentEL");
-  Print (L"EL%d\n", (UINT32)((ArmReadCurrentEL () >> 2) & 3));
+  LogPrint (L"EL%d\n", (UINT32)((ArmReadCurrentEL () >> 2) & 3));
 
   STEP (L"CNTFRQ_EL0");
   Freq = ArmGenericTimerGetTimerFreq ();
-  Print (L"%ld Hz%s\n", Freq, (Freq == 0) ? L"  (EMPTY)" : L"");
+  LogPrint (L"%ld Hz%s\n", Freq, (Freq == 0) ? L"  (EMPTY)" : L"");
 
   STEP (L"Counter over Stall(100 ms)");
   Before = ArmGenericTimerGetSystemCount ();
   gBS->Stall (100000);
   After = ArmGenericTimerGetSystemCount ();
-  Print (L"+%ld ticks\n", After - Before);
+  LogPrint (L"+%ld ticks\n", After - Before);
 }
 
 STATIC
@@ -64,27 +134,27 @@ TestRuntime (
 
   STEP (L"RT GetTime");
   Status = gRT->GetTime (&Time, NULL);
-  Print (L"%r  %04d-%02d-%02d %02d:%02d\n", Status, Time.Year, Time.Month, Time.Day, Time.Hour, Time.Minute);
+  LogPrint (L"%r  %04d-%02d-%02d %02d:%02d\n", Status, Time.Year, Time.Month, Time.Day, Time.Hour, Time.Minute);
 
   STEP (L"RT GetVariable BootCurrent");
   Size   = sizeof (BootCurrent);
   Status = gRT->GetVariable (L"BootCurrent", &gEfiGlobalVariableGuid, NULL, &Size, &BootCurrent);
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
 
   Value = 0x12345678;
 
   STEP (L"RT SetVariable (volatile)");
   Status = gRT->SetVariable (L"R8sDiagV", &mTestVarGuid, EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS, sizeof (Value), &Value);
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
 
   STEP (L"RT SetVariable (non-volatile)");
   Status = gRT->SetVariable (L"R8sDiagNV", &mTestVarGuid, EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS, sizeof (Value), &Value);
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
 
   STEP (L"RT SetVariable (delete)");
   gRT->SetVariable (L"R8sDiagV", &mTestVarGuid, 0, 0, NULL);
   Status = gRT->SetVariable (L"R8sDiagNV", &mTestVarGuid, 0, 0, NULL);
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
 }
 
 STATIC
@@ -101,7 +171,7 @@ TestRng (
 
   STEP (L"Locate RNG protocol");
   Status = gBS->LocateProtocol (&gEfiRngProtocolGuid, NULL, (VOID **)&Rng);
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
   if (EFI_ERROR (Status)) {
     return;
   }
@@ -109,15 +179,15 @@ TestRng (
   STEP (L"RNG GetInfo");
   AlgoSize = sizeof (Algos);
   Status   = Rng->GetInfo (Rng, &AlgoSize, Algos);
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
 
   STEP (L"RNG GetRNG 16 bytes");
   Status = Rng->GetRNG (Rng, NULL, 16, Buffer);
-  Print (L"%r  %02x%02x%02x%02x...\n", Status, Buffer[0], Buffer[1], Buffer[2], Buffer[3]);
+  LogPrint (L"%r  %02x%02x%02x%02x...\n", Status, Buffer[0], Buffer[1], Buffer[2], Buffer[3]);
 
   STEP (L"RNG GetRNG 64 bytes");
   Status = Rng->GetRNG (Rng, NULL, 64, Buffer);
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
 }
 
 STATIC
@@ -131,19 +201,19 @@ TestGraphics (
 
   STEP (L"Locate GOP");
   Status = gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID **)&Gop);
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
   if (EFI_ERROR (Status)) {
     return;
   }
 
-  Print (L"    mode %d/%d, %dx%d, format %d, fb 0x%lx size 0x%lx\n",
+  LogPrint (L"    mode %d/%d, %dx%d, format %d, fb 0x%lx size 0x%lx\n",
          Gop->Mode->Mode, Gop->Mode->MaxMode,
          Gop->Mode->Info->HorizontalResolution, Gop->Mode->Info->VerticalResolution,
          Gop->Mode->Info->PixelFormat, Gop->Mode->FrameBufferBase, (UINT64)Gop->Mode->FrameBufferSize);
 
   STEP (L"GOP SetMode (same mode)");
   Status = Gop->SetMode (Gop, Gop->Mode->Mode);
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
 }
 
 STATIC
@@ -174,7 +244,7 @@ TestMemory (
     Status   = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
   }
 
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
   if (EFI_ERROR (Status)) {
     return;
   }
@@ -191,18 +261,18 @@ TestMemory (
     }
   }
 
-  Print (L"    free RAM %ld MB, largest free block %ld MB, %d entries\n",
+  LogPrint (L"    free RAM %ld MB, largest free block %ld MB, %d entries\n",
          Total * EFI_PAGE_SIZE / 0x100000, Largest * EFI_PAGE_SIZE / 0x100000, (UINT32)(MapSize / DescSize));
   FreePool (Map);
 
   STEP (L"AllocatePages 512 MB");
   Status = gBS->AllocatePages (AllocateAnyPages, EfiLoaderData, EFI_SIZE_TO_PAGES (0x20000000), &Addr);
-  Print (L"%r  at 0x%lx\n", Status, Addr);
+  LogPrint (L"%r  at 0x%lx\n", Status, Addr);
   if (!EFI_ERROR (Status)) {
     STEP (L"Touch + free 512 MB");
     SetMem ((VOID *)(UINTN)Addr, 0x20000000, 0xA5);
     gBS->FreePages (Addr, EFI_SIZE_TO_PAGES (0x20000000));
-    Print (L"OK\n");
+    LogPrint (L"OK\n");
   }
 }
 
@@ -218,7 +288,7 @@ TestBlockIo (
 
   STEP (L"BlockIo handles");
   Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
-  Print (L"%r  %d\n", Status, (UINT32)(EFI_ERROR (Status) ? 0 : Count));
+  LogPrint (L"%r  %d\n", Status, (UINT32)(EFI_ERROR (Status) ? 0 : Count));
   if (!EFI_ERROR (Status)) {
     FreePool (Handles);
   }
@@ -245,9 +315,9 @@ SYSREG_RW (contextidr_el1)
 #define TEST_SYSREG(Name)                                             \
   do {                                                                \
     UINT64 V = Read_##Name ();                                        \
-    Print (L"%-34a ... ", "write " #Name " (same value)");            \
+    LogPrint (L"%-34a ... ", "write " #Name " (same value)");            \
     Write_##Name (V);                                                 \
-    Print (L"OK  0x%lx\n", V);                                        \
+    LogPrint (L"OK  0x%lx\n", V);                                        \
   } while (0)
 
 STATIC
@@ -266,7 +336,7 @@ TestLowMemory (
   Addr = 0x80000000;
   STEP (L"Allocate 0x80000000 (0x80 pages)");
   Status = gBS->AllocatePages (AllocateAddress, EfiLoaderCode, 0x80, &Addr);
-  Print (L"%r\n", Status);
+  LogPrint (L"%r\n", Status);
   if (EFI_ERROR (Status)) {
     return;
   }
@@ -284,7 +354,7 @@ TestLowMemory (
     }
   }
 
-  Print (L"%d bad words\n", (UINT32)Bad);
+  LogPrint (L"%d bad words\n", (UINT32)Bad);
   gBS->FreePages (Addr, 0x80);
 }
 
@@ -304,7 +374,7 @@ TestSysRegs (
 
   STEP (L"tlbi vmalle1 + dsb + isb");
   __asm__ __volatile__ ("dsb ishst\n tlbi vmalle1\n dsb ish\n isb" : : : "memory");
-  Print (L"OK\n");
+  LogPrint (L"OK\n");
 }
 
 EFI_STATUS
@@ -314,8 +384,9 @@ R8sDiagMain (
   IN EFI_SYSTEM_TABLE  *SystemTable
   )
 {
-  Print (L"\n=== r8s-woa firmware self-test ===\n");
-  Print (L"Firmware: %s rev 0x%x, UEFI %d.%d\n",
+  LogOpen (ImageHandle);
+  LogPrint (L"\n=== r8s-woa firmware self-test ===\n");
+  LogPrint (L"Firmware: %s rev 0x%x, UEFI %d.%d\n",
          SystemTable->FirmwareVendor, SystemTable->FirmwareRevision,
          SystemTable->Hdr.Revision >> 16, SystemTable->Hdr.Revision & 0xFFFF);
 
@@ -328,6 +399,10 @@ R8sDiagMain (
   TestLowMemory ();
   TestSysRegs ();
 
-  Print (L"=== self-test finished: no hang ===\n\n");
+  LogPrint (L"=== self-test finished: no hang ===\n\n");
+  if (mLog != NULL) {
+    mLog->Close (mLog);
+  }
+
   return EFI_SUCCESS;
 }

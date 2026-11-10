@@ -29,11 +29,14 @@
   BaseMemoryLib
   ArmLib
   ArmGenericTimerCounterLib
+  PrintLib
 
 [Protocols]
   gEfiRngProtocolGuid
   gEfiGraphicsOutputProtocolGuid
   gEfiBlockIoProtocolGuid
+  gEfiLoadedImageProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
 
 [Guids]
   gEfiGlobalVariableGuid

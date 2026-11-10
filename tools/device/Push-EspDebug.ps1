@@ -66,8 +66,7 @@ echo "=== r8s-woa: self-test, then Windows Boot Manager ==="
 for %m in fs0 fs1 fs2 fs3 fs4
   if exist %m:\EFI\r8s\R8sDiag.efi then
     echo "Self-test (saved to %m:\r8s-diag.txt) ..."
-    %m:\EFI\r8s\R8sDiag.efi >a %m:\r8s-diag.txt
-    type %m:\r8s-diag.txt
+    %m:\EFI\r8s\R8sDiag.efi
   endif
 endfor
 for %m in fs0 fs1 fs2 fs3 fs4
