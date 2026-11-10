@@ -1,8 +1,10 @@
-## r8s-woa: same S5E9830 tables as Silicium-ACPI x1s, new FILE_GUID.
+## r8s-woa: same S5E9830 tables as Silicium-ACPI x1s.
+## FILE_GUID must stay gEfiAcpiTableStorageGuid: AcpiPlatformDxe only loads
+## tables from the file with this GUID (a new GUID = no FADT/MADT/DSDT installed).
 [Defines]
   INF_VERSION                    = 0x00010005
   BASE_NAME                      = AcpiTables
-  FILE_GUID                      = 2471108C-C4A0-4675-B150-F712BCCFFABA
+  FILE_GUID                      = 7E374E25-8E01-4FEE-87F2-390C23C606CD
   MODULE_TYPE                    = USER_DEFINED
   VERSION_STRING                 = 1.0
 
