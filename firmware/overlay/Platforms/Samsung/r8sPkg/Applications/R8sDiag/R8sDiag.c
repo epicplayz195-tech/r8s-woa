@@ -21,6 +21,8 @@
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/BlockIo.h>
 #include <Guid/GlobalVariable.h>
+#include <Guid/Acpi.h>
+#include <IndustryStandard/Acpi.h>
 #include <Library/PrintLib.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
@@ -477,6 +479,162 @@ TestSysRegs (
   LogPrint (L"OK\n");
 }
 
+//
+// Boot Manager hangs inside BlUtlGetAcpiTable('FACP'): it maps the RSDP,
+// then walks the XSDT/RSDT and maps every table header. Dump exactly what
+// it walks, with checksums and the memory type under each table.
+//
+STATIC EFI_MEMORY_DESCRIPTOR  *mMap;
+STATIC UINTN                  mMapSize;
+STATIC UINTN                  mDescSize;
+
+STATIC
+CONST CHAR16 *
+MemTypeAt (
+  UINT64  Addr
+  )
+{
+  STATIC CONST CHAR16  *Names[] = {
+    L"Reserved", L"LoaderCode", L"LoaderData", L"BSCode", L"BSData", L"RTCode", L"RTData",
+    L"Conventional", L"Unusable", L"ACPIReclaim", L"ACPINVS", L"MMIO", L"MMIOPort", L"PalCode", L"Persistent"
+  };
+  UINTN                  Index;
+  EFI_MEMORY_DESCRIPTOR  *D;
+
+  for (Index = 0; mMap != NULL && Index < mMapSize / mDescSize; Index++) {
+    D = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)mMap + Index * mDescSize);
+    if ((Addr >= D->PhysicalStart) && (Addr < D->PhysicalStart + EFI_PAGES_TO_SIZE (D->NumberOfPages))) {
+      return (D->Type < ARRAY_SIZE (Names)) ? Names[D->Type] : L"Other";
+    }
+  }
+
+  return L"NOT IN MAP";
+}
+
+STATIC
+UINT8
+Sum8 (
+  CONST VOID  *P,
+  UINTN       Len
+  )
+{
+  UINT8  S = 0;
+
+  while (Len-- > 0) {
+    S = (UINT8)(S + ((CONST UINT8 *)P)[Len]);
+  }
+
+  return S;
+}
+
+STATIC
+VOID
+DumpTable (
+  UINT64  Addr,
+  UINTN   Index
+  )
+{
+  EFI_ACPI_DESCRIPTION_HEADER  *H;
+  CHAR8                        Sig[5];
+
+  if (Addr == 0) {
+    LogPrint (L"      [%d] NULL entry\n", (UINT32)Index);
+    return;
+  }
+
+  H = (EFI_ACPI_DESCRIPTION_HEADER *)(UINTN)Addr;
+  CopyMem (Sig, &H->Signature, 4);
+  Sig[4] = 0;
+  LogPrint (L"      [%d] %a at 0x%lx len 0x%x rev %d sum %a  (%s)\n",
+            (UINT32)Index, Sig, Addr, H->Length, H->Revision,
+            (H->Length >= sizeof (*H) && H->Length < 0x100000 && Sum8 (H, H->Length) == 0) ? "ok" : "BAD",
+            MemTypeAt (Addr));
+
+  if (H->Signature == EFI_ACPI_6_3_FIXED_ACPI_DESCRIPTION_TABLE_SIGNATURE && H->Length >= 148) {
+    EFI_ACPI_6_3_FIXED_ACPI_DESCRIPTION_TABLE  *F = (VOID *)H;
+
+    LogPrint (L"          FADT flags 0x%x arm 0x%x minor %d FACS 0x%x/0x%lx DSDT 0x%x/0x%lx\n",
+              F->Flags, F->ArmBootArch, F->MinorVersion, F->FirmwareCtrl, F->XFirmwareCtrl, F->Dsdt, F->XDsdt);
+    if (F->XDsdt != 0) {
+      DumpTable (F->XDsdt, 99);
+    } else if (F->Dsdt != 0) {
+      DumpTable (F->Dsdt, 99);
+    }
+  }
+}
+
+STATIC
+VOID
+TestAcpi (
+  VOID
+  )
+{
+  UINTN                                         Index;
+  EFI_ACPI_6_3_ROOT_SYSTEM_DESCRIPTION_POINTER  *Rsdp;
+  EFI_ACPI_DESCRIPTION_HEADER                   *X;
+  UINTN                                         Count;
+  UINTN                                         Key;
+  UINT32                                        Ver;
+
+  // Memory map for the type lookups.
+  mMapSize = 0;
+  gBS->GetMemoryMap (&mMapSize, NULL, &Key, &mDescSize, &Ver);
+  mMapSize += 16 * mDescSize;
+  mMap = AllocatePool (mMapSize);
+  if ((mMap != NULL) && EFI_ERROR (gBS->GetMemoryMap (&mMapSize, mMap, &Key, &mDescSize, &Ver))) {
+    FreePool (mMap);
+    mMap = NULL;
+  }
+
+  LogPrint (L"ACPI tables (what Boot Manager walks looking for FACP)\n");
+  Rsdp = NULL;
+  for (Index = 0; Index < gST->NumberOfTableEntries; Index++) {
+    EFI_CONFIGURATION_TABLE  *C = &gST->ConfigurationTable[Index];
+
+    if (CompareGuid (&C->VendorGuid, &gEfiAcpi20TableGuid)) {
+      Rsdp = C->VendorTable;
+      LogPrint (L"    config table: ACPI 2.0 RSDP at %p (%s)\n", Rsdp, MemTypeAt ((UINTN)Rsdp));
+    } else if (CompareGuid (&C->VendorGuid, &gEfiAcpi10TableGuid)) {
+      LogPrint (L"    config table: ACPI 1.0 RSDP at %p (%s)\n", C->VendorTable, MemTypeAt ((UINTN)C->VendorTable));
+      if (Rsdp == NULL) {
+        Rsdp = C->VendorTable;
+      }
+    }
+  }
+
+  if (Rsdp == NULL) {
+    LogPrint (L"    NO RSDP in the configuration table\n");
+    return;
+  }
+
+  LogPrint (L"    RSDP sig %a rev %d len %d sum20 %a sum %a RSDT 0x%x XSDT 0x%lx\n",
+            (Rsdp->Signature == EFI_ACPI_6_3_ROOT_SYSTEM_DESCRIPTION_POINTER_SIGNATURE) ? "ok" : "BAD",
+            Rsdp->Revision, Rsdp->Length,
+            (Sum8 (Rsdp, 20) == 0) ? "ok" : "BAD",
+            (Rsdp->Revision >= 2 && Rsdp->Length >= 36 && Sum8 (Rsdp, Rsdp->Length) == 0) ? "ok" : "BAD",
+            Rsdp->RsdtAddress, Rsdp->XsdtAddress);
+
+  if (Rsdp->XsdtAddress != 0) {
+    X = (EFI_ACPI_DESCRIPTION_HEADER *)(UINTN)Rsdp->XsdtAddress;
+    LogPrint (L"    XSDT:\n");
+    DumpTable (Rsdp->XsdtAddress, 0);
+    Count = (X->Length > sizeof (*X)) ? (X->Length - sizeof (*X)) / 8 : 0;
+    for (Index = 0; Index < Count && Index < 64; Index++) {
+      DumpTable (ReadUnaligned64 ((UINT64 *)((UINT8 *)X + sizeof (*X) + Index * 8)), Index + 1);
+    }
+  }
+
+  if (Rsdp->RsdtAddress != 0) {
+    X = (EFI_ACPI_DESCRIPTION_HEADER *)(UINTN)Rsdp->RsdtAddress;
+    LogPrint (L"    RSDT:\n");
+    DumpTable (Rsdp->RsdtAddress, 0);
+    Count = (X->Length > sizeof (*X)) ? (X->Length - sizeof (*X)) / 4 : 0;
+    for (Index = 0; Index < Count && Index < 64; Index++) {
+      DumpTable (ReadUnaligned32 ((UINT32 *)((UINT8 *)X + sizeof (*X) + Index * 4)), Index + 1);
+    }
+  }
+}
+
 EFI_STATUS
 EFIAPI
 R8sDiagMain (
@@ -486,6 +644,7 @@ R8sDiagMain (
 {
   LogOpen (ImageHandle);
   LogPrint (L"\n=== r8s-woa firmware self-test ===\n");
+  TestAcpi ();
   LogPrint (L"Firmware: %s rev 0x%x, UEFI %d.%d\n",
          SystemTable->FirmwareVendor, SystemTable->FirmwareRevision,
          SystemTable->Hdr.Revision >> 16, SystemTable->Hdr.Revision & 0xFFFF);

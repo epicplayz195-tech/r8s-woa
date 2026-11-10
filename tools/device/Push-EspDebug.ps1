@@ -22,7 +22,8 @@
 param(
     [string]$Source   = "D:\woa\WinPE",
     [string]$EspImage = "D:\woa\Mu-r8s-DEBUG\esp-r8s.img.gz",
-    [string]$Scratch  = "D:\woa\scratch"
+    [string]$Scratch  = "D:\woa\scratch",
+    [switch]$NoAcpi      # experiment: tracer hides the ACPI tables from Boot Manager
 )
 . "$PSScriptRoot\Common.ps1"
 
@@ -92,6 +93,10 @@ echo "winpe.efi not found on fs0-fs4"
     # The UEFI Shell reads UCS-2 (UTF-16LE with BOM) or ASCII; use ASCII with CRLF.
     [System.IO.File]::WriteAllText($nshPath, ($nsh -replace "`r?`n", "`r`n"), [System.Text.Encoding]::ASCII)
     Invoke-Adb push $nshPath /tmp/esp/startup.nsh | Out-Null
+    if ($NoAcpi) {
+        Invoke-PhoneShell "echo 1 > /tmp/esp/r8s-noacpi" | Out-Null
+        Write-Host "==> NoAcpi: Boot Manager will start without ACPI tables (experiment)"
+    }
 
     $ls = Invoke-PhoneShell "ls -l /tmp/esp/efi/boot/ /tmp/esp/EFI/r8s/ /tmp/esp/startup.nsh /tmp/esp/sources/ 2>&1; true"
     Write-Host $ls

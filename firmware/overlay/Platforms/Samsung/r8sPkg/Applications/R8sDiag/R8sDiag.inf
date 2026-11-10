@@ -30,6 +30,7 @@
   ArmLib
   ArmGenericTimerCounterLib
   PrintLib
+  BaseLib
 
 [Protocols]
   gEfiRngProtocolGuid
@@ -40,3 +41,5 @@
 
 [Guids]
   gEfiGlobalVariableGuid
+  gEfiAcpi20TableGuid
+  gEfiAcpi10TableGuid

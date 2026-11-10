@@ -30,6 +30,10 @@
   CacheMaintenanceLib
   MemoryAllocationLib
 
+[Guids]
+  gEfiAcpi20TableGuid
+  gEfiAcpi10TableGuid
+
 [Protocols]
   gEfiLoadedImageProtocolGuid
   gEfiSimpleFileSystemProtocolGuid

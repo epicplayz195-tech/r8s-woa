@@ -30,6 +30,7 @@
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/MemoryAttribute.h>
+#include <Guid/Acpi.h>
 #include <Library/CacheMaintenanceLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Guid/FileInfo.h>
@@ -422,6 +423,37 @@ InstallCrumbs (
 
   WriteBackDataCacheRange ((VOID *)(UINTN)Tramp, EFI_PAGE_SIZE);
   InvalidateInstructionCacheRange ((VOID *)(UINTN)Tramp, EFI_PAGE_SIZE);
+}
+
+//
+// Experiment switch: if \r8s-noacpi exists on the ESP, remove the ACPI
+// configuration tables before Boot Manager starts, to see whether it gets
+// past BlUtlGetAcpiTable('FACP') without them.
+//
+STATIC
+VOID
+MaybeHideAcpi (
+  IN EFI_HANDLE  Device
+  )
+{
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+
+  if (EFI_ERROR (gBS->HandleProtocol (Device, &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs)) ||
+      EFI_ERROR (Fs->OpenVolume (Fs, &Root)))
+  {
+    return;
+  }
+
+  if (!EFI_ERROR (Root->Open (Root, &File, L"\\r8s-noacpi", EFI_FILE_MODE_READ, 0))) {
+    File->Close (File);
+    EMIT ("T> r8s-noacpi present: removing ACPI tables: 2.0 %r, 1.0 %r\n",
+          gBS->InstallConfigurationTable (&gEfiAcpi20TableGuid, NULL),
+          gBS->InstallConfigurationTable (&gEfiAcpi10TableGuid, NULL));
+  }
+
+  Root->Close (Root);
 }
 
 STATIC
@@ -887,6 +919,7 @@ R8sTraceMain (
   InstallTracer ();
   mActive = TRUE;
   EMIT ("T> tracer on\n");
+  MaybeHideAcpi (Self->DeviceHandle);
 
   Status = gBS->LoadImage (FALSE, ImageHandle, Path, NULL, 0, &Child);
   EMIT ("T> LoadImage winpe.efi: %r\n", Status);
