@@ -75,6 +75,11 @@ if ($Iso) {
         Write-Host "==> Copying boot files"
         robocopy "$drive\efi" "$Out\efi" /E /NFL /NDL /NJH /NJS | Out-Null
         if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)." }
+        # The BCD's ramdisk options point at \boot\boot.sdi; without it Boot
+        # Manager stops with 0xc000000f ("a required device isn't connected").
+        if (-not (Test-Path "$drive\boot\boot.sdi")) { throw "$Iso has no boot\boot.sdi." }
+        New-Item -ItemType Directory -Force -Path "$Out\boot" | Out-Null
+        Copy-Item "$drive\boot\boot.sdi" "$Out\boot\boot.sdi" -Force
         if (Test-Path "$drive\bootmgr.efi") { Copy-Item "$drive\bootmgr.efi" $Out }
 
         Write-Host "==> Extracting WinPE (boot.wim index 1)"
