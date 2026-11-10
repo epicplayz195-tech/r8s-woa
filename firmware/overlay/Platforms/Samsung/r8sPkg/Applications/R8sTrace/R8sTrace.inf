@@ -26,6 +26,8 @@
   DebugLib
   DevicePathLib
   BaseMemoryLib
+  PrintLib
 
 [Protocols]
   gEfiLoadedImageProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid

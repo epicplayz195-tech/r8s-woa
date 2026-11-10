@@ -15,6 +15,8 @@
   On screen afterwards:
     "Running ...winpe.efi" then frozen/black -> Boot Manager hangs.
     "Boot Manager returned, lasterror = ..."  -> it failed; that's the code.
+  Logs: \r8s-diag.txt (self-test) and \r8s-trace.txt (every firmware call
+  Boot Manager makes) are saved on the ESP; Pull-Logs.ps1 copies them.
     Boot Manager menu / Windows logo         -> it works; continue normally.
 #>
 param(
@@ -63,7 +65,9 @@ echo " "
 echo "=== r8s-woa: self-test, then Windows Boot Manager ==="
 for %m in fs0 fs1 fs2 fs3 fs4
   if exist %m:\EFI\r8s\R8sDiag.efi then
-    %m:\EFI\r8s\R8sDiag.efi
+    echo "Self-test (saved to %m:\r8s-diag.txt) ..."
+    %m:\EFI\r8s\R8sDiag.efi >a %m:\r8s-diag.txt
+    type %m:\r8s-diag.txt
   endif
 endfor
 for %m in fs0 fs1 fs2 fs3 fs4

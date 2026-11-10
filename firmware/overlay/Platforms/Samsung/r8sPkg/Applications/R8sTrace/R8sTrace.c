@@ -9,7 +9,10 @@
   (printed at 1, 2, 4, 8 ... repeats). Original tables are restored at
   ExitBootServices so the OS never calls into this (freed) image.
 
-  Only useful with a DEBUG firmware build; RELEASE builds discard DEBUG().
+  Every line is also appended to \r8s-trace.txt on the same partition and
+  flushed straight away (when the TPL allows file I/O), so the log survives
+  a hang and can be pulled from TWRP. Works with RELEASE firmware too (the
+  on-screen copy needs a DEBUG build).
 
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
@@ -22,7 +25,10 @@
 #include <Library/DebugLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/BaseMemoryLib.h>
+#include <Library/PrintLib.h>
 #include <Protocol/LoadedImage.h>
+#include <Protocol/SimpleFileSystem.h>
+#include <Guid/FileInfo.h>
 
 STATIC EFI_BOOT_SERVICES     mBs;     // copy of the original tables
 STATIC EFI_RUNTIME_SERVICES  mRt;
@@ -30,21 +36,130 @@ STATIC CONST CHAR8           *mLast;
 STATIC UINTN                 mRepeat;
 STATIC BOOLEAN               mActive;
 
+STATIC EFI_FILE_PROTOCOL     *mLog;
+STATIC BOOLEAN               mInLog;
+STATIC CHAR8                 mLine[256];
+STATIC CHAR8                 mPending[8192];
+STATIC UINTN                 mPendingLen;
+
+//
+// Write one line to the screen (DEBUG builds) and to \r8s-trace.txt.
+// File I/O runs only at TPL <= TPL_CALLBACK; otherwise the line waits in
+// mPending until the next call that can write. mInLog stops the FAT driver's
+// own firmware calls from being traced while we write.
+//
+STATIC
+VOID
+Emit (
+  IN CONST CHAR8  *Line
+  )
+{
+  EFI_TPL  Tpl;
+  UINTN    Len;
+  UINTN    Size;
+
+  DEBUG ((DEBUG_ERROR, "%a", Line));
+  if (mLog == NULL) {
+    return;
+  }
+
+  Len = AsciiStrLen (Line);
+  if (mPendingLen + Len < sizeof (mPending)) {
+    CopyMem (mPending + mPendingLen, Line, Len);
+    mPendingLen += Len;
+  }
+
+  Tpl = mBs.RaiseTPL (TPL_HIGH_LEVEL);
+  mBs.RestoreTPL (Tpl);
+  if (Tpl > TPL_CALLBACK) {
+    return;
+  }
+
+  mInLog = TRUE;
+  Size   = mPendingLen;
+  mLog->Write (mLog, &Size, mPending);
+  mLog->Flush (mLog);
+  mPendingLen = 0;
+  mInLog      = FALSE;
+}
+
+#define EMIT(...)                                                             \
+  do {                                                                        \
+    if (mInLog) break;                                                        \
+    AsciiSPrint (mLine, sizeof (mLine), __VA_ARGS__);                         \
+    Emit (mLine);                                                             \
+  } while (0)
+
 #define T(Name, Fmt, ...)                                                     \
   do {                                                                        \
-    if (!mActive) break;                                                      \
+    if (!mActive || mInLog) break;                                            \
     if (mLast == (Name)) {                                                    \
       mRepeat++;                                                              \
       if ((mRepeat & (mRepeat - 1)) != 0) break;                              \
-      DEBUG ((DEBUG_ERROR, "T> %a x%d " Fmt "\n", (Name), (UINT32)mRepeat, ##__VA_ARGS__)); \
+      EMIT ("T> %a x%d " Fmt "\n", (Name), (UINT32)mRepeat, ##__VA_ARGS__);   \
     } else {                                                                  \
       mLast = (Name); mRepeat = 1;                                            \
-      DEBUG ((DEBUG_ERROR, "T> %a " Fmt "\n", (Name), ##__VA_ARGS__));        \
+      EMIT ("T> %a " Fmt "\n", (Name), ##__VA_ARGS__);                        \
     }                                                                         \
   } while (0)
 
 #define R(Name, Status)                                                       \
-  do { if (mActive && mRepeat == 1) DEBUG ((DEBUG_ERROR, "   %a = %r\n", (Name), (Status))); } while (0)
+  do { if (mActive && !mInLog && mRepeat == 1) EMIT ("   %a = %r\n", (Name), (Status)); } while (0)
+
+STATIC
+VOID
+LogOpen (
+  IN EFI_HANDLE  Device
+  )
+{
+  EFI_STATUS                       Status;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+
+  Status = gBS->HandleProtocol (Device, &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
+  if (EFI_ERROR (Status) || EFI_ERROR (Fs->OpenVolume (Fs, &Root))) {
+    Print (L"Trace file: no file system (%r)\n", Status);
+    return;
+  }
+
+  // Truncate: open, delete, create again.
+  if (!EFI_ERROR (Root->Open (Root, &File, L"\\r8s-trace.txt", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0))) {
+    File->Delete (File);
+  }
+
+  Status = Root->Open (Root, &mLog, L"\\r8s-trace.txt", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0);
+  Root->Close (Root);
+  if (EFI_ERROR (Status)) {
+    mLog = NULL;
+  }
+
+  Print (L"Trace file \\r8s-trace.txt: %r\n", Status);
+}
+
+STATIC
+VOID
+LogClose (
+  VOID
+  )
+{
+  EFI_TPL  Tpl;
+
+  if (mLog == NULL) {
+    return;
+  }
+
+  Tpl = gBS->RaiseTPL (TPL_HIGH_LEVEL);
+  gBS->RestoreTPL (Tpl);
+  if (Tpl <= TPL_CALLBACK) {
+    mInLog = TRUE;
+    mLog->Flush (mLog);
+    mLog->Close (mLog);
+    mInLog = FALSE;
+  }
+
+  mLog = NULL;
+}
 
 STATIC
 VOID
@@ -83,7 +198,7 @@ TAllocatePages (EFI_ALLOCATE_TYPE Type, EFI_MEMORY_TYPE MemType, UINTN Pages, EF
   EFI_STATUS Status;
   T ("AllocatePages", "type %d mem %d pages 0x%lx addr 0x%lx", Type, MemType, (UINT64)Pages, (Memory != NULL) ? *Memory : 0);
   Status = mBs.AllocatePages (Type, MemType, Pages, Memory);
-  if (mActive && mRepeat == 1) DEBUG ((DEBUG_ERROR, "   = %r 0x%lx\n", Status, (Memory != NULL) ? *Memory : 0));
+  if (mActive && !mInLog && mRepeat == 1) EMIT ("   = %r 0x%lx\n", Status, (Memory != NULL) ? *Memory : 0);
   return Status;
 }
 
@@ -269,7 +384,8 @@ TUnloadImage (EFI_HANDLE Image)
 STATIC EFI_STATUS EFIAPI
 TExitBootServices (EFI_HANDLE Image, UINTN MapKey)
 {
-  DEBUG ((DEBUG_ERROR, "T> ExitBootServices key 0x%lx (tracer off)\n", (UINT64)MapKey));
+  EMIT ("T> ExitBootServices key 0x%lx (tracer off, log closed)\n", (UINT64)MapKey);
+  LogClose ();
   RestoreTables ();
   return gBS->ExitBootServices (Image, MapKey);
 }
@@ -494,16 +610,19 @@ R8sTraceMain (
     return EFI_OUT_OF_RESOURCES;
   }
 
+  LogOpen (Self->DeviceHandle);
   InstallTracer ();
   mActive = TRUE;
-  DEBUG ((DEBUG_ERROR, "T> tracer on\n"));
+  EMIT ("T> tracer on\n");
 
   Status = gBS->LoadImage (FALSE, ImageHandle, Path, NULL, 0, &Child);
   if (!EFI_ERROR (Status)) {
     Status = gBS->StartImage (Child, NULL, NULL);
   }
 
+  EMIT ("T> Boot Manager returned: %r\n", Status);
   RestoreTables ();
+  LogClose ();
   Print (L"\nBoot Manager returned: %r\n", Status);
   return Status;
 }
