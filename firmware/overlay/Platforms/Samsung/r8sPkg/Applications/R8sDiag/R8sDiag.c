@@ -372,6 +372,33 @@ TestSysRegs (
   TEST_SYSREG (ttbr0_el1);
   TEST_SYSREG (sctlr_el1);
 
+  //
+  // Boot Manager loads NEW translation tables. Same mapping, different
+  // address: copy the TTBR0 root table, switch to the copy, switch back.
+  // A hypervisor that only allows tables it knows would hang here.
+  //
+  {
+    EFI_PHYSICAL_ADDRESS  Copy;
+    UINT64                Old;
+    UINT64                Daif;
+
+    STEP (L"TTBR0 -> copy of page tables");
+    if (EFI_ERROR (gBS->AllocatePages (AllocateAnyPages, EfiBootServicesData, 1, &Copy))) {
+      LogPrint (L"no memory\n");
+    } else {
+      Old = Read_ttbr0_el1 ();
+      CopyMem ((VOID *)(UINTN)Copy, (VOID *)(UINTN)(Old & 0x0000FFFFFFFFF000ULL), EFI_PAGE_SIZE);
+      __asm__ __volatile__ ("mrs %0, daif\n msr daifset, #0xf" : "=r" (Daif) : : "memory");
+      __asm__ __volatile__ ("dsb ish" : : : "memory");
+      Write_ttbr0_el1 (Copy | (Old & ~0x0000FFFFFFFFF000ULL));
+      __asm__ __volatile__ ("tlbi vmalle1\n dsb ish\n isb" : : : "memory");
+      Write_ttbr0_el1 (Old);
+      __asm__ __volatile__ ("tlbi vmalle1\n dsb ish\n isb\n msr daif, %0" : : "r" (Daif) : "memory");
+      gBS->FreePages (Copy, 1);
+      LogPrint (L"OK  (0x%lx -> 0x%lx -> back)\n", Old, (UINT64)Copy);
+    }
+  }
+
   STEP (L"tlbi vmalle1 + dsb + isb");
   __asm__ __volatile__ ("dsb ishst\n tlbi vmalle1\n dsb ish\n isb" : : : "memory");
   LogPrint (L"OK\n");

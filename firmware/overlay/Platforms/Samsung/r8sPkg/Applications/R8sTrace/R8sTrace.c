@@ -71,7 +71,7 @@ Emit (
 
   Tpl = mBs.RaiseTPL (TPL_HIGH_LEVEL);
   mBs.RestoreTPL (Tpl);
-  if (Tpl > TPL_CALLBACK) {
+  if (Tpl >= TPL_CALLBACK) {      // FAT and disk drivers lock at TPL_CALLBACK
     return;
   }
 
@@ -83,6 +83,49 @@ Emit (
   mInLog      = FALSE;
 }
 
+//
+// Only calls made by Boot Manager are traced: the return address must lie in
+// its image or in EfiLoaderCode pages it allocated (its context-switch code
+// is copied there). Firmware-internal calls (FAT reading winpe.efi, disk
+// I/O) are skipped, so the log file is never written in the middle of one.
+//
+STATIC UINT64  mRangeBase[16];
+STATIC UINT64  mRangeEnd[16];
+STATIC UINTN   mRangeCount;
+
+STATIC
+VOID
+AddRange (
+  IN UINT64  Base,
+  IN UINT64  Size
+  )
+{
+  if (mRangeCount < ARRAY_SIZE (mRangeBase)) {
+    mRangeBase[mRangeCount] = Base;
+    mRangeEnd[mRangeCount]  = Base + Size;
+    mRangeCount++;
+  }
+}
+
+STATIC
+BOOLEAN
+FromBootmgr (
+  IN UINTN  ReturnAddress
+  )
+{
+  UINTN  Index;
+
+  for (Index = 0; Index < mRangeCount; Index++) {
+    if ((ReturnAddress >= mRangeBase[Index]) && (ReturnAddress < mRangeEnd[Index])) {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+#define CALLER  ((UINTN)__builtin_return_address (0))
+
 #define EMIT(...)                                                             \
   do {                                                                        \
     if (mInLog) break;                                                        \
@@ -92,7 +135,7 @@ Emit (
 
 #define T(Name, Fmt, ...)                                                     \
   do {                                                                        \
-    if (!mActive || mInLog) break;                                            \
+    if (!mActive || mInLog || !FromBootmgr (CALLER)) break;                   \
     if (mLast == (Name)) {                                                    \
       mRepeat++;                                                              \
       if ((mRepeat & (mRepeat - 1)) != 0) break;                              \
@@ -104,7 +147,7 @@ Emit (
   } while (0)
 
 #define R(Name, Status)                                                       \
-  do { if (mActive && !mInLog && mRepeat == 1) EMIT ("   %a = %r\n", (Name), (Status)); } while (0)
+  do { if (mActive && !mInLog && mRepeat == 1 && FromBootmgr (CALLER)) EMIT ("   %a = %r\n", (Name), (Status)); } while (0)
 
 STATIC
 VOID
@@ -198,7 +241,15 @@ TAllocatePages (EFI_ALLOCATE_TYPE Type, EFI_MEMORY_TYPE MemType, UINTN Pages, EF
   EFI_STATUS Status;
   T ("AllocatePages", "type %d mem %d pages 0x%lx addr 0x%lx", Type, MemType, (UINT64)Pages, (Memory != NULL) ? *Memory : 0);
   Status = mBs.AllocatePages (Type, MemType, Pages, Memory);
-  if (mActive && !mInLog && mRepeat == 1) EMIT ("   = %r 0x%lx\n", Status, (Memory != NULL) ? *Memory : 0);
+  if (mActive && FromBootmgr (CALLER)) {
+    if (!EFI_ERROR (Status) && (MemType == EfiLoaderCode) && (Memory != NULL)) {
+      AddRange (*Memory, EFI_PAGES_TO_SIZE (Pages));
+    }
+
+    if (!mInLog && mRepeat == 1) {
+      EMIT ("   = %r 0x%lx\n", Status, (Memory != NULL) ? *Memory : 0);
+    }
+  }
   return Status;
 }
 
@@ -616,7 +667,15 @@ R8sTraceMain (
   EMIT ("T> tracer on\n");
 
   Status = gBS->LoadImage (FALSE, ImageHandle, Path, NULL, 0, &Child);
+  EMIT ("T> LoadImage winpe.efi: %r\n", Status);
   if (!EFI_ERROR (Status)) {
+    EFI_LOADED_IMAGE_PROTOCOL  *Img;
+
+    if (!EFI_ERROR (gBS->HandleProtocol (Child, &gEfiLoadedImageProtocolGuid, (VOID **)&Img))) {
+      AddRange ((UINT64)(UINTN)Img->ImageBase, Img->ImageSize);
+      EMIT ("T> Boot Manager image at 0x%lx size 0x%lx\n", (UINT64)(UINTN)Img->ImageBase, Img->ImageSize);
+    }
+
     Status = gBS->StartImage (Child, NULL, NULL);
   }
 
