@@ -4,6 +4,8 @@
   Run as Administrator. Nothing on C: is used.
 
 .DESCRIPTION
+  (WinPE has no findstr.exe; the screen uses find.exe.)
+
   DISM can't mount a WIM on a non-NTFS drive (D: is exFAT), so this makes a
   small NTFS virtual disk in D:\woa\scratch, mounts boot.wim there, writes
   Windows\System32\startnet.cmd, commits, and marks the image bootable again.
@@ -73,14 +75,14 @@ echo.
 for /f %%a in ('pnputil /enum-devices /connected ^| find /c "Instance ID"') do echo  Devices found: %%a
 echo.
 echo ---- Devices WITHOUT a working driver ----
-pnputil /enum-devices /problem | findstr /i /c:"Instance ID" /c:"Problem" /c:"Description"
+pnputil /enum-devices /problem | find /v "Class GUID" | find /v "Manufacturer" | find /v "Driver Name"
 echo.
 echo ---- USB ----
-pnputil /enum-devices /connected /class USB | findstr /i /c:"Instance ID" /c:"Status"
-pnputil /enum-devices /connected /class Keyboard | findstr /i /c:"Instance ID"
+pnputil /enum-devices /connected /class USB | find "Instance ID"
+pnputil /enum-devices /connected /class Keyboard | find "Instance ID"
 echo.
 echo ---- All devices ----
-pnputil /enum-devices /connected | findstr /i /c:"Instance ID"
+pnputil /enum-devices /connected | find "Instance ID"
 timeout /t 20 /nobreak >nul
 goto loop
 '@
