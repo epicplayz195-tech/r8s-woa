@@ -15,7 +15,7 @@
 
 [Binaries]
   ASL|Common/SSDT.aml
-  ASL|S5E9830/DSDT.aml
+  ASL|R8sAcpi/DSDT.aml          # r8s-woa DSDT (S5E9830 + USB0), compiled by build.sh
 
 [Packages]
   ArmPkg/ArmPkg.dec

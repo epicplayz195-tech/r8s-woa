@@ -45,6 +45,13 @@ rm -rf "$MU/Silicium-ACPI/Platforms/Samsung/r8s"
 echo "==> Applying r8s-woa overlay"
 cp -rv "$ROOT/firmware/overlay/." "$MU/"
 
+echo "==> Compiling r8s-woa ACPI sources (iasl)"
+command -v iasl >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y acpica-tools; }
+for asl in "$MU"/Silicium-ACPI/Silicon/Samsung/R8sAcpi/*.asl; do
+  iasl -p "${asl%.asl}" "$asl"
+done
+ls -l "$MU"/Silicium-ACPI/Silicon/Samsung/R8sAcpi/
+
 if [[ $INSTALL_DEPS -eq 1 ]]; then
   echo "==> Installing build dependencies"
   (cd "$MU" && ./setup_env.sh -p apt)

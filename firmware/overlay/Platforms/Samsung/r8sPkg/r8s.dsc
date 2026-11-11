@@ -84,6 +84,7 @@
   #
   # r8s-woa: firmware self-test app (runs from the ESP before Boot Manager)
   #
+  r8sPkg/Drivers/UsbHostDxe/UsbHostDxe.inf
   r8sPkg/Applications/R8sDiag/R8sDiag.inf
   r8sPkg/Applications/R8sTrace/R8sTrace.inf
 

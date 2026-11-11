@@ -50,6 +50,8 @@
 
   # r8s-woa: USB device mode (DWC3) from x1s, used by FFU mode
   INF SamsungPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
+  # r8s-woa: DWC3 left in host (xHCI) mode for Windows at ExitBootServices
+  INF r8sPkg/Drivers/UsbHostDxe/UsbHostDxe.inf
 
   INF SamsungPkg/Drivers/RngDxe/RngDxe.inf
 

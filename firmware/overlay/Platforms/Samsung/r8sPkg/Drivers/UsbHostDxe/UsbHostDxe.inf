@@ -1,0 +1,36 @@
+## @file
+#  r8s-woa: leaves the DWC3 USB controller in host (xHCI) mode with the PHY
+#  powered when Windows takes over, so Windows' inbox usbxhci driver can bind
+#  to the ACPI device \_SB.USB0 (PNP0D10). UEFI itself is unaffected: this
+#  only runs at ExitBootServices.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = UsbHostDxe
+  FILE_GUID                      = 3B8E61A4-0C27-4D59-9F1E-6A2D5C7B8E13
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = UsbHostDxeInitialize
+
+[Sources]
+  UsbHostDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  SamsungPkg/SamsungPkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  IoLib
+  DebugLib
+  PlatformUsbfnLib
+
+[Guids]
+  gEfiEventExitBootServicesGuid
+
+[Depex]
+  TRUE
