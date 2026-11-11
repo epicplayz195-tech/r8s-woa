@@ -29,6 +29,10 @@ jobs:
         run: |
           & $env:MSBUILD drivers\r8slog\r8slog.vcxproj /p:Configuration=Release /p:Platform=ARM64 /v:m /nologo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The WDK also drops a package copy of the INF (without the .sys) in a
+          # subfolder; DISM /Recurse would trip over it.
+          Get-ChildItem out\drivers -Directory | ForEach-Object {
+            Get-ChildItem $_.FullName -Directory | Remove-Item -Recurse -Force }
           Get-ChildItem -Recurse out | ForEach-Object { $_.FullName }
 
       - name: Test-sign the drivers
