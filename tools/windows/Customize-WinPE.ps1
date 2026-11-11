@@ -82,7 +82,7 @@ set LOG=\\.\R8sLog
 (echo [startnet] wpeinit done) > %LOG% 2>nul
 cls
 echo ================= r8s-woa WinPE =================
-echo  Windows is running. Plug USB in now to have it tested.
+echo  Windows is running. USB must be plugged in BEFORE boot.
 echo  For 60 s USB is checked every 15 s, then everything is
 echo  written to the log and the phone restarts by itself so
 echo  the firmware can save it.

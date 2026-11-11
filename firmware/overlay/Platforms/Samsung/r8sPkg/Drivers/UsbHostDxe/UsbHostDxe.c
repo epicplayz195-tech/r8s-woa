@@ -37,6 +37,19 @@
 #define MAX77705_CHG_CNFG_06   0xBD     // [3:2] CHGPROT: 3 = settings unlocked
 #define MAX77705_MODE_OTG      0x0A
 
+// MAX77705 USB-C controller (CCIC) page at 0x25: a mailbox runs commands in
+// its firmware. Write [opcode, data] from 0x21, write 0x41 to start, wait for
+// UIC_INT (0x02) bit 7 (APCmdRes), read the echo from 0x51. Protocol from
+// Samsung's max77705_usbc.c (via the mainline-style s10-linux max77705-typec).
+#define MAX77705_USBC_ADDR        0x25
+#define MAX77705_UIC_INT          0x02
+#define MAX77705_UIC_APCMDRES     BIT7
+#define MAX77705_OPCODE_WRITE     0x21
+#define MAX77705_OPCODE_WRITE_END 0x41
+#define MAX77705_OPCODE_READ      0x51
+#define MAX77705_OP_CTRL1_W       0x06    // MUIC switch control
+#define MAX77705_MUIC_COM_USB     0x09    // D+/D- to the USB PHY
+
 STATIC EFI_EVENT  mExitBootServicesEvent;
 
 //
@@ -75,6 +88,37 @@ UsbHostEnableVbus (
 
   if (!EFI_ERROR (I2c->Read (MAX77705_I2C_BUS, MAX77705_CHG_ADDR, MAX77705_CHG_CNFG_00, &Val))) {
     I2c->Write (MAX77705_I2C_BUS, MAX77705_CHG_ADDR, MAX77705_CHG_CNFG_00, (UINT8)((Val & ~0x0F) | MAX77705_MODE_OTG));
+  }
+
+  //
+  // The CCIC firmware leaves its MUIC switch open after an attach, so D+/D-
+  // never reach the PHY (the hub gets power but nothing enumerates). Route
+  // them to USB, as Samsung's MUIC driver does on every attach. A later
+  // attach opens the switch again: plug the adapter in before Windows starts.
+  //
+  gBS->Stall (100 * 1000);
+  {
+    UINT8  Cmd[2];
+    UINTN  Wait;
+
+    I2c->Read (MAX77705_I2C_BUS, MAX77705_USBC_ADDR, MAX77705_UIC_INT, &Val);     // clear a stale APCmdRes
+    Cmd[0] = MAX77705_OP_CTRL1_W;
+    Cmd[1] = MAX77705_MUIC_COM_USB;
+    if (EFI_ERROR (I2c->WriteBuffer (MAX77705_I2C_BUS, MAX77705_USBC_ADDR, MAX77705_OPCODE_WRITE, Cmd, sizeof (Cmd)))) {
+      return;
+    }
+
+    I2c->Write (MAX77705_I2C_BUS, MAX77705_USBC_ADDR, MAX77705_OPCODE_WRITE_END, 0);
+    for (Wait = 0; Wait < 100; Wait++) {                                        // up to 500 ms
+      gBS->Stall (5 * 1000);
+      if (!EFI_ERROR (I2c->Read (MAX77705_I2C_BUS, MAX77705_USBC_ADDR, MAX77705_UIC_INT, &Val)) &&
+          ((Val & MAX77705_UIC_APCMDRES) != 0))
+      {
+        break;
+      }
+    }
+
+    I2c->ReadBuffer (MAX77705_I2C_BUS, MAX77705_USBC_ADDR, MAX77705_OPCODE_READ, Cmd, sizeof (Cmd));
   }
 }
 

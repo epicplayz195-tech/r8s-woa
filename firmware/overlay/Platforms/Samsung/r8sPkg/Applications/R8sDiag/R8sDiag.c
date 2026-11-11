@@ -159,6 +159,33 @@ TestMax77705 (
               ((Val & 0xF) == 0xA) ? "OTG boost: USB port powered" :
               ((Val & 0xF) == 0x5) ? "charger + buck (normal)" : "other");
   }
+
+  // USB-C mailbox: MUIC CTRL1_W = COM_USB (route D+/D- to the USB PHY), the
+  // same command UsbHostDxe sends for Windows. Echo should be 06.
+  {
+    UINT8  Cmd[2];
+    UINTN  Wait;
+
+    I2c->Read (7, 0x25, 0x02, &Val);
+    Cmd[0] = 0x06;
+    Cmd[1] = 0x09;
+    Status = I2c->WriteBuffer (7, 0x25, 0x21, Cmd, sizeof (Cmd));
+    if (!EFI_ERROR (Status)) {
+      Status = I2c->Write (7, 0x25, 0x41, 0);
+    }
+
+    for (Wait = 0; !EFI_ERROR (Status) && (Wait < 100); Wait++) {
+      gBS->Stall (5 * 1000);
+      if (!EFI_ERROR (I2c->Read (7, 0x25, 0x02, &Val)) && ((Val & BIT7) != 0)) {
+        break;
+      }
+    }
+
+    Cmd[0] = Cmd[1] = 0xEE;
+    I2c->ReadBuffer (7, 0x25, 0x51, Cmd, sizeof (Cmd));
+    LogPrint (L"    USB-C mailbox CTRL1_W COM_USB  ... %r, %s after %d ms, echo %02x %02x\n",
+              Status, (Wait < 100) ? L"answered" : L"NO answer", (UINT32)(Wait * 5), Cmd[0], Cmd[1]);
+  }
 }
 
 //
