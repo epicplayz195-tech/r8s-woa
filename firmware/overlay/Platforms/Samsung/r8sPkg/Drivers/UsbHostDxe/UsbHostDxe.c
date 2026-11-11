@@ -8,8 +8,8 @@
   PHY (same sequence as the S5E9830 PlatformUsbfnLib), resets the core and
   selects host mode. The ACPI DSDT describes the controller as PNP0D10.
 
-  VBUS (5 V to the USB device) is NOT switched on: that needs the PMIC /
-  charger driver. Use a self-powered USB hub or a powered OTG adapter.
+  VBUS (5 V to the USB device) is switched on through the MAX77705 charger
+  (OTG boost mode), so plain OTG adapters and bus-powered hubs work.
 
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
@@ -20,6 +20,7 @@
 #include <Library/DebugLib.h>
 #include <Library/PlatformUsbfnLib.h>
 #include <Device/Dwc3.h>
+#include <Protocol/EFIHsI2c.h>
 
 // S5E9830 USB DRD PHY controller (same values as PlatformUsbfnLib's private header).
 #define USBDRD_PHY_CTRL_BASE  0x10C00000
@@ -27,7 +28,55 @@
 #define UTMI_DP_PULLDOWN      BIT3
 #define UTMI_DM_PULLDOWN      BIT2
 
+// MAX77705 (charger / USB-C) on HSI2C bus 7 (0x105C0000), charger page at 0x69.
+// Registers from Linux include/linux/mfd/max77705-private.h (CHG base 0xB0).
+#define MAX77705_I2C_BUS       7
+#define MAX77705_CHG_ADDR      0x69
+#define MAX77705_CHG_CNFG_00   0xB7     // [3:0] MODE: OTG | BOOST = 0x0A
+#define MAX77705_CHG_CNFG_02   0xB9     // [7:6] OTG_ILIM: 1 = 900 mA
+#define MAX77705_CHG_CNFG_06   0xBD     // [3:2] CHGPROT: 3 = settings unlocked
+#define MAX77705_MODE_OTG      0x0A
+
 STATIC EFI_EVENT  mExitBootServicesEvent;
+
+//
+// Turn the USB-C port's 5 V (VBUS) on: the MAX77705 boosts the battery to
+// 5 V in OTG mode, as Android does when an OTG adapter is plugged in.
+// Without it a keyboard or unpowered hub gets no power.
+//
+STATIC
+VOID
+UsbHostEnableVbus (
+  VOID
+  )
+{
+  EFI_HSI2C_PROTOCOL  *I2c;
+  EFI_STATUS          Status;
+  UINT8               Val;
+
+  if (EFI_ERROR (gBS->LocateProtocol (&gEfiHsI2cProtocolGuid, NULL, (VOID **)&I2c))) {
+    return;
+  }
+
+  Status = I2c->InitBus (MAX77705_I2C_BUS);
+  if (EFI_ERROR (Status) && (Status != EFI_ALREADY_STARTED)) {
+    return;
+  }
+
+  if (EFI_ERROR (I2c->Read (MAX77705_I2C_BUS, MAX77705_CHG_ADDR, MAX77705_CHG_CNFG_06, &Val))) {
+    return;
+  }
+
+  I2c->Write (MAX77705_I2C_BUS, MAX77705_CHG_ADDR, MAX77705_CHG_CNFG_06, (UINT8)(Val | 0x0C));
+
+  if (!EFI_ERROR (I2c->Read (MAX77705_I2C_BUS, MAX77705_CHG_ADDR, MAX77705_CHG_CNFG_02, &Val))) {
+    I2c->Write (MAX77705_I2C_BUS, MAX77705_CHG_ADDR, MAX77705_CHG_CNFG_02, (UINT8)((Val & ~0xC0) | 0x40));
+  }
+
+  if (!EFI_ERROR (I2c->Read (MAX77705_I2C_BUS, MAX77705_CHG_ADDR, MAX77705_CHG_CNFG_00, &Val))) {
+    I2c->Write (MAX77705_I2C_BUS, MAX77705_CHG_ADDR, MAX77705_CHG_CNFG_00, (UINT8)((Val & ~0x0F) | MAX77705_MODE_OTG));
+  }
+}
 
 STATIC
 VOID
@@ -46,6 +95,8 @@ UsbHostOnExitBootServices (
   }
 
   Base = Platform.ControllerBase;
+
+  UsbHostEnableVbus ();
 
   if (EFI_ERROR (UsbfnPlatformPhyInit ())) {
     return;

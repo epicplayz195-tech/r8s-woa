@@ -1,8 +1,9 @@
 ## @file
 #  r8s-woa: leaves the DWC3 USB controller in host (xHCI) mode with the PHY
 #  powered when Windows takes over, so Windows' inbox usbxhci driver can bind
-#  to the ACPI device \_SB.USB0 (PNP0D10). UEFI itself is unaffected: this
-#  only runs at ExitBootServices.
+#  to the ACPI device \_SB.USB0 (PNP0D10), and turns the port's 5 V on through
+#  the MAX77705 (OTG boost). UEFI itself is unaffected: this only runs at
+#  ExitBootServices.
 #
 #  SPDX-License-Identifier: BSD-2-Clause-Patent
 ##
@@ -31,6 +32,9 @@
 
 [Guids]
   gEfiEventExitBootServicesGuid
+
+[Protocols]
+  gEfiHsI2cProtocolGuid
 
 [Depex]
   TRUE

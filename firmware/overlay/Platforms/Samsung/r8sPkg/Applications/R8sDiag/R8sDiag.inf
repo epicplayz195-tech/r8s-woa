@@ -19,6 +19,7 @@
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   ArmPkg/ArmPkg.dec
+  SamsungPkg/SamsungPkg.dec
 
 [LibraryClasses]
   UefiApplicationEntryPoint
@@ -39,6 +40,7 @@
   gEfiBlockIoProtocolGuid
   gEfiLoadedImageProtocolGuid
   gEfiSimpleFileSystemProtocolGuid
+  gEfiHsI2cProtocolGuid
 
 [Guids]
   gEfiGlobalVariableGuid

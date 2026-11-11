@@ -27,6 +27,7 @@
 #include <Library/PrintLib.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
+#include <Protocol/EFIHsI2c.h>
 
 //
 // Everything printed also goes to \r8s-diag.txt on the ESP, flushed per
@@ -96,6 +97,68 @@ LogOpen (
   }
 
   mRoot = Root;
+}
+
+//
+// MAX77705 (charger / USB-C, HSI2C bus 7): checks the I2C link and shows the
+// charger mode. UsbHostDxe sets MODE 0x0A (OTG boost = USB port 5 V on) when
+// Windows starts; seeing 0xA here after Windows rebooted means it worked.
+//
+STATIC
+VOID
+TestMax77705 (
+  VOID
+  )
+{
+  EFI_HSI2C_PROTOCOL  *I2c;
+  EFI_STATUS          Status;
+  UINT8               Val;
+  UINT8               Regs[16];
+  UINTN               i;
+  STATIC CONST struct {
+    UINT8           Addr;
+    UINT8           First;
+    CONST CHAR16    *Name;
+  } Pages[] = {
+    { 0x66, 0x00, L"PMIC  0x66" },
+    { 0x69, 0xB0, L"CHG   0x69" },
+    { 0x25, 0x00, L"USBC  0x25" },
+  };
+
+  LogPrint (L"MAX77705 (charger/USB-C, I2C bus 7)\n");
+  if (EFI_ERROR (gBS->LocateProtocol (&gEfiHsI2cProtocolGuid, NULL, (VOID **)&I2c))) {
+    LogPrint (L"    no HSI2C protocol\n");
+    return;
+  }
+
+  Status = I2c->InitBus (7);
+  LogPrint (L"    InitBus(7)                     ... %r\n", Status);
+  if (EFI_ERROR (Status) && (Status != EFI_ALREADY_STARTED)) {
+    return;
+  }
+
+  for (i = 0; i < ARRAY_SIZE (Pages); i++) {
+    UINTN  j;
+
+    LogPrint (L"    %s reg 0x%02x:", Pages[i].Name, Pages[i].First);
+    for (j = 0; j < 16; j++) {
+      Status = I2c->Read (7, Pages[i].Addr, Pages[i].First + (UINT32)j, &Regs[j]);
+      if (EFI_ERROR (Status)) {
+        LogPrint (L" %r", Status);
+        break;
+      }
+
+      LogPrint (L" %02x", Regs[j]);
+    }
+
+    LogPrint (L"\n");
+  }
+
+  if (!EFI_ERROR (I2c->Read (7, 0x69, 0xB7, &Val))) {
+    LogPrint (L"    charger CNFG_00 MODE = 0x%x (%a)\n", Val & 0xF,
+              ((Val & 0xF) == 0xA) ? "OTG boost: USB port powered" :
+              ((Val & 0xF) == 0x5) ? "charger + buck (normal)" : "other");
+  }
 }
 
 //
@@ -865,6 +928,7 @@ R8sDiagMain (
   LogOpen (ImageHandle);
   LogPrint (L"\n=== r8s-woa firmware self-test ===\n");
   SaveWindowsLog ();
+  TestMax77705 ();
   TestAcpi ();
   LogPrint (L"Firmware: %s rev 0x%x, UEFI %d.%d\n",
          SystemTable->FirmwareVendor, SystemTable->FirmwareRevision,
