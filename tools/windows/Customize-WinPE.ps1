@@ -4,13 +4,13 @@
   Run as Administrator. Nothing on C: is used.
 
 .DESCRIPTION
-  (WinPE has no findstr.exe; the screen uses find.exe.)
+  (WinPE has no findstr.exe or timeout.exe; the screen uses find and ping.)
 
   DISM can't mount a WIM on a non-NTFS drive (D: is exFAT), so this makes a
   small NTFS virtual disk in D:\woa\scratch, mounts boot.wim there, writes
   Windows\System32\startnet.cmd, commits, and marks the image bootable again.
 
-  The startup screen repeats every 20 s, so devices that appear later (a USB
+  It first lists every device once (60 s), then repeats a short summary every 30 s, so devices that appear later (a USB
   keyboard plugged in) show up. If a keyboard works, press Ctrl+C to get a
   normal command prompt.
 #>
@@ -66,24 +66,27 @@ try {
 @echo off
 wpeinit
 color 1F
+rem WinPE has no timeout.exe or findstr.exe: ping waits, find filters.
+cls
+echo ================= r8s-woa WinPE =================
+echo  ALL devices Windows found (shown once, 60 s):
+echo.
+pnputil /enum-devices /connected | find "Instance ID"
+ping -n 61 127.0.0.1 >nul
 :loop
 cls
 echo ================= r8s-woa WinPE =================
-echo  Windows is running. Screen refreshes every 20 s.
-echo  USB keyboard working? Press Ctrl+C for a prompt.
-echo.
+echo  Refreshes every 30 s. USB keyboard: Ctrl+C = prompt
 for /f %%a in ('pnputil /enum-devices /connected ^| find /c "Instance ID"') do echo  Devices found: %%a
 echo.
-echo ---- Devices WITHOUT a working driver ----
-pnputil /enum-devices /problem | find /v "Class GUID" | find /v "Manufacturer" | find /v "Driver Name"
-echo.
 echo ---- USB ----
+pnputil /enum-devices /connected | find "RWOA0001"
 pnputil /enum-devices /connected /class USB | find "Instance ID"
 pnputil /enum-devices /connected /class Keyboard | find "Instance ID"
 echo.
-echo ---- All devices ----
-pnputil /enum-devices /connected | find "Instance ID"
-timeout /t 20 /nobreak >nul
+echo ---- Devices WITHOUT a working driver ----
+pnputil /enum-devices /problem | find /v "Class GUID" | find /v "Manufacturer" | find /v "Driver Name" | find /v "Device Description"
+ping -n 31 127.0.0.1 >nul
 goto loop
 '@
     [IO.File]::WriteAllText("$mount\Windows\System32\startnet.cmd", ($cmd -replace "`r?`n", "`r`n"), [Text.Encoding]::ASCII)
