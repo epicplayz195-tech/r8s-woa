@@ -23,9 +23,9 @@ DefaultDestDir = 13
 r8slog.sys = 1,,
 
 [Manufacturer]
-%ProviderName% = Standard,NTarm64
+%ProviderName% = Standard,NTarm64.10.0...16299
 
-[Standard.NTarm64]
+[Standard.NTarm64.10.0...16299]
 %DeviceDesc% = R8sLog_Install, ACPI\RWOA0002
 
 [R8sLog_Install.NT]
