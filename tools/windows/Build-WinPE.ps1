@@ -88,6 +88,7 @@ if ($Iso) {
             -Setbootable -ScratchDirectory $Scratch | Out-Null
         # -Setbootable: Boot Manager only boots the image marked bootable from a
         # ramdisk; without it winload.efi "isn't found" (0xc0000225).
+        & "$PSScriptRoot\Set-WimBootable.ps1" -Wim "$Out\sources\boot.wim"   # -Setbootable alone may not stick
     }
     finally { Dismount-DiskImage -ImagePath $isoPath | Out-Null }
 }
