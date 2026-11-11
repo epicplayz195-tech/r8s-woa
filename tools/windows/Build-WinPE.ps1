@@ -85,7 +85,9 @@ if ($Iso) {
         Write-Host "==> Extracting WinPE (boot.wim index 1)"
         Export-WindowsImage -SourceImagePath $srcWim -SourceIndex 1 `
             -DestinationImagePath "$Out\sources\boot.wim" -CompressionType max `
-            -ScratchDirectory $Scratch | Out-Null
+            -Setbootable -ScratchDirectory $Scratch | Out-Null
+        # -Setbootable: Boot Manager only boots the image marked bootable from a
+        # ramdisk; without it winload.efi "isn't found" (0xc0000225).
     }
     finally { Dismount-DiskImage -ImagePath $isoPath | Out-Null }
 }
