@@ -68,6 +68,12 @@ for %m in fs0 fs1 fs2 fs3 fs4
   if exist %m:\EFI\r8s\R8sDiag.efi then
     echo "Self-test (saved to %m:\r8s-diag.txt) ..."
     %m:\EFI\r8s\R8sDiag.efi
+    if exist %m:\r8s-winlog-new then
+      echo " "
+      echo "Windows log saved to %m:\r8s-winlog.txt."
+      echo "Hold Vol Up + Power for TWRP, then run Pull-Logs.ps1."
+      goto Done
+    endif
   endif
 endfor
 for %m in fs0 fs1 fs2 fs3 fs4

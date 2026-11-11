@@ -1,0 +1,57 @@
+;
+; r8slog.inf - r8s-woa Windows -> firmware RAM log (ACPI\RWOA0002)
+;
+; SPDX-License-Identifier: BSD-2-Clause-Patent
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ProviderName%
+CatalogFile = r8slog.cat
+DriverVer   = 11/11/2026,1.0.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+r8slog.sys = 1,,
+
+[Manufacturer]
+%ProviderName% = Standard,NTarm64
+
+[Standard.NTarm64]
+%DeviceDesc% = R8sLog_Install, ACPI\RWOA0002
+
+[R8sLog_Install.NT]
+CopyFiles = R8sLog_CopyFiles
+
+[R8sLog_CopyFiles]
+r8slog.sys
+
+[R8sLog_Install.NT.Services]
+AddService = r8slog, 0x00000002, R8sLog_Service
+
+[R8sLog_Service]
+DisplayName   = %ServiceDesc%
+ServiceType   = 1               ; SERVICE_KERNEL_DRIVER
+StartType     = 3               ; SERVICE_DEMAND_START
+ErrorControl  = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\r8slog.sys
+
+[R8sLog_Install.NT.Wdf]
+KmdfService = r8slog, R8sLog_WdfSection
+
+[R8sLog_WdfSection]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+ProviderName = "r8s-woa"
+DiskName     = "r8s-woa log driver disk"
+DeviceDesc   = "r8s-woa firmware log (RAM handoff)"
+ServiceDesc  = "r8s-woa firmware log"

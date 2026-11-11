@@ -29,6 +29,10 @@ gMemoryDescriptor[] = {
   {"Display Reserved",   0xF1000000, 0x009E4000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},
   {"RAM Partition",      0xF19E4000, 0x00001000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK}, // TEMP: Needed for MMU to Pass.
   {"EL2 Early Memory",   0x9FEC00000,0x01400000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK}, // live DT el2_earlymem
+  // r8s-woa: Windows -> firmware log handoff (r8slog.sys writes, R8sDiag saves it to the ESP after
+  // a reboot). Inside Samsung's debug-snapshot log_platform region, which the bootloader keeps across
+  // warm resets.
+  {"Windows Log",        0xFDB10000, 0x00400000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK},
 
   // iRAM Regions
   {"IRAM",               0x02020000, 0x00018000, AddDev, MMAP_IO, UNCACHEABLE, MmIO,   DEVICE},

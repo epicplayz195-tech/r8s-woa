@@ -33,6 +33,7 @@
 // line, so the results can be pulled from TWRP even after a hang.
 //
 STATIC EFI_FILE_PROTOCOL  *mLog;
+STATIC EFI_FILE_PROTOCOL  *mRoot;     // ESP root (kept open; set by LogOpen)
 STATIC EFI_HANDLE         mDevice;   // ESP partition (set by LogOpen)
 
 STATIC
@@ -94,7 +95,75 @@ LogOpen (
     mLog = NULL;
   }
 
-  Root->Close (Root);
+  mRoot = Root;
+}
+
+//
+// Windows -> firmware log handoff. r8slog.sys (Windows) writes text into the
+// reserved RAM below; after Windows reboots, the bootloader leaves that RAM
+// alone and this saves it to \r8s-winlog.txt (appended) and creates
+// \r8s-winlog-new so startup.nsh stops instead of booting Windows again.
+// Layout (shared with r8slog.sys): 64-byte header, then text.
+//
+#define WINLOG_BASE    0xFDB10000ULL
+#define WINLOG_SIZE    SIZE_4MB
+#define WINLOG_MAGIC   0x31474F4C57533852ULL      // "R8SWLOG1"
+
+typedef struct {
+  UINT64    Magic;
+  UINT32    Length;       // bytes of text after the header
+  UINT32    Capacity;
+  UINT32    Writes;
+  UINT32    Reserved[11];
+} WINLOG_HEADER;
+
+STATIC
+VOID
+SaveWindowsLog (
+  VOID
+  )
+{
+  WINLOG_HEADER      *Hdr;
+  EFI_FILE_PROTOCOL  *File;
+  UINTN              Size;
+  UINTN              Len;
+  CHAR8              Line[96];
+
+  Hdr = (WINLOG_HEADER *)(UINTN)WINLOG_BASE;
+  InvalidateDataCacheRange (Hdr, WINLOG_SIZE);
+  if (Hdr->Magic != WINLOG_MAGIC) {
+    LogPrint (L"Windows log in RAM                 ... none\n");
+    return;
+  }
+
+  Size = MIN (Hdr->Length, WINLOG_SIZE - sizeof (*Hdr));
+  LogPrint (L"Windows log in RAM                 ... %d bytes, %d writes\n", (UINT32)Size, Hdr->Writes);
+  if ((mRoot == NULL) || (Size == 0)) {
+    goto Clear;
+  }
+
+  if (EFI_ERROR (mRoot->Open (mRoot, &File, L"\\r8s-winlog.txt", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0))) {
+    LogPrint (L"    can't open \\r8s-winlog.txt\n");
+    goto Clear;
+  }
+
+  File->SetPosition (File, MAX_UINT64);        // append (UEFI: MAX_UINT64 = end of file)
+  Len = AsciiSPrint (Line, sizeof (Line), "\r\n===== Windows log (%d bytes, saved by the firmware after reboot) =====\r\n", (UINT32)Size);
+  File->Write (File, &Len, Line);
+  File->Write (File, &Size, (UINT8 *)(Hdr + 1));
+  File->Flush (File);
+  File->Close (File);
+  LogPrint (L"    saved to \\r8s-winlog.txt\n");
+
+  if (!EFI_ERROR (mRoot->Open (mRoot, &File, L"\\r8s-winlog-new", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0))) {
+    Size = 2;
+    File->Write (File, &Size, "1\n");
+    File->Close (File);
+  }
+
+Clear:
+  ZeroMem (Hdr, sizeof (*Hdr));
+  WriteBackInvalidateDataCacheRange (Hdr, sizeof (*Hdr));
 }
 
 STATIC EFI_GUID mTestVarGuid = { 0x6a1f3c2e, 0x8b4d, 0x4e7a, { 0x9c, 0x51, 0x2d, 0x7e, 0x33, 0x10, 0xa8, 0x5f } };
@@ -795,6 +864,7 @@ R8sDiagMain (
 {
   LogOpen (ImageHandle);
   LogPrint (L"\n=== r8s-woa firmware self-test ===\n");
+  SaveWindowsLog ();
   TestAcpi ();
   LogPrint (L"Firmware: %s rev 0x%x, UEFI %d.%d\n",
          SystemTable->FirmwareVendor, SystemTable->FirmwareRevision,
@@ -812,6 +882,10 @@ R8sDiagMain (
   TestPmu ();
 
   LogPrint (L"=== self-test finished: no hang ===\n\n");
+  if (mRoot != NULL) {
+    mRoot->Close (mRoot);
+  }
+
   if (mLog != NULL) {
     mLog->Close (mLog);
   }

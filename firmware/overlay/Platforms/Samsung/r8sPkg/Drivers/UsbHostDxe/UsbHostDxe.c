@@ -21,6 +21,12 @@
 #include <Library/PlatformUsbfnLib.h>
 #include <Device/Dwc3.h>
 
+// S5E9830 USB DRD PHY controller (same values as PlatformUsbfnLib's private header).
+#define USBDRD_PHY_CTRL_BASE  0x10C00000
+#define USBCON_UTMI           0x50
+#define UTMI_DP_PULLDOWN      BIT3
+#define UTMI_DM_PULLDOWN      BIT2
+
 STATIC EFI_EVENT  mExitBootServicesEvent;
 
 STATIC
@@ -44,6 +50,11 @@ UsbHostOnExitBootServices (
   if (EFI_ERROR (UsbfnPlatformPhyInit ())) {
     return;
   }
+
+  // PlatformUsbfnLib sets the PHY up for device mode, which turns the D+/D-
+  // pull-downs off. A host (downstream) port needs both 15k pull-downs, or a
+  // device's pull-up is never seen and nothing gets detected.
+  MmioOr32 (USBDRD_PHY_CTRL_BASE + USBCON_UTMI, UTMI_DP_PULLDOWN | UTMI_DM_PULLDOWN);
 
   // Not a DWC3? Leave it alone.
   Reg = MmioRead32 (Base + DWC3_GSNPSID);

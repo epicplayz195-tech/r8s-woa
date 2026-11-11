@@ -7,6 +7,10 @@
   r8s-diag.txt  - firmware self-test (R8sDiag.efi)
   r8s-trace.txt - every firmware call Windows Boot Manager made (R8sTrace.efi),
                   written line by line, so it shows the last call before a hang.
+  r8s-winlog.txt - what WinPE logged (devices, drivers, USB), handed to the
+                  firmware through RAM across a reboot and saved by R8sDiag.
+                  Pulling it also clears the "new Windows log" flag, so the
+                  next boot goes on to Windows again.
 #>
 param([string]$OutDir = "D:\woa\logs")
 . "$PSScriptRoot\Common.ps1"
@@ -16,13 +20,14 @@ $null = Get-PartitionNode "esp"
 $dest = Join-Path $OutDir (Get-Date -Format "yyyyMMdd-HHmmss")
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
-Invoke-PhoneShell "mkdir -p /tmp/esp; umount /tmp/esp 2>/dev/null; mount -t vfat -o ro /dev/block/by-name/esp /tmp/esp" | Out-Null
+Invoke-PhoneShell "mkdir -p /tmp/esp; umount /tmp/esp 2>/dev/null; mount -t vfat /dev/block/by-name/esp /tmp/esp" | Out-Null
 try {
-    foreach ($f in "r8s-diag.txt", "r8s-trace.txt") {
+    foreach ($f in "r8s-diag.txt", "r8s-trace.txt", "r8s-winlog.txt") {
         $exists = Invoke-PhoneShell "[ -f /tmp/esp/$f ] && echo yes || echo no"
         if ($exists -ne "yes") { Write-Host "($f not found on the ESP)"; continue }
         Invoke-Adb pull "/tmp/esp/$f" (Join-Path $dest $f) | Out-Null
     }
+    Invoke-PhoneShell "rm -f /tmp/esp/r8s-winlog-new; sync" | Out-Null
 }
 finally { Invoke-PhoneShell "umount /tmp/esp" | Out-Null }
 

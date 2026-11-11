@@ -1,0 +1,50 @@
+name: Build Windows drivers (ARM64)
+
+on:
+  push:
+    paths:
+      - "drivers/**"
+      - ".github/workflows/build-drivers.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find Visual Studio, WDK and ARM64 tools
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+          Write-Host "Visual Studio: $vs"
+          Write-Host "Kits include dirs:"; Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -ErrorAction SilentlyContinue | ForEach-Object { "  $($_.Name)  km\ntddk.h=$(Test-Path (Join-Path $_.FullName 'km\ntddk.h'))" }
+          Write-Host "ARM64 platform toolsets:"; Get-ChildItem "$vs\MSBuild\Microsoft\VC\v170\Platforms\ARM64\PlatformToolsets" -ErrorAction SilentlyContinue | ForEach-Object { "  $($_.Name)" }
+          Write-Host "ARM64 compilers:"; Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | ForEach-Object { "  $($_.FullName)" }
+          "MSBUILD=$vs\MSBuild\Current\Bin\amd64\MSBuild.exe" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Build r8slog (Release|ARM64)
+        shell: pwsh
+        run: |
+          & $env:MSBUILD drivers\r8slog\r8slog.vcxproj /p:Configuration=Release /p:Platform=ARM64 /v:m /nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem -Recurse out | ForEach-Object { $_.FullName }
+
+      - name: Test-sign the drivers
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=r8s-woa test signing" `
+                    -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(10)
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          Get-ChildItem -Recurse out -Filter *.sys | ForEach-Object {
+            & $signtool sign /v /fd sha256 /sha1 $cert.Thumbprint $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Export-Certificate -Cert $cert -FilePath out\drivers\r8s-woa-test.cer | Out-Null
+          Get-ChildItem -Recurse out -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName).Hash.ToLower(), $_.FullName.Substring((Resolve-Path out).Path.Length + 1) } | Tee-Object out\drivers\SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r8s-drivers-arm64
+          path: out/drivers/

@@ -89,5 +89,23 @@ DefinitionBlock ("DSDT.aml", "DSDT", 2, "SAMSUN", "S5E9830 ", 4)
                 Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { 342 }
             })
         }
+
+        //
+        // r8s-woa: RAM log handed from Windows to the firmware across a reboot
+        // (r8slog.sys -> \\.\R8sLog; R8sDiag saves it as \r8s-winlog.txt).
+        // Must match "Windows Log" in r8sPkg MemoryMapLib.
+        //
+        Device (WLOG)
+        {
+            Name (_HID, "RWOA0002")
+            Name (_UID, 0)
+
+            Method (_STA, 0, NotSerialized) { Return (0x0F) }
+
+            Name (_CRS, ResourceTemplate ()
+            {
+                Memory32Fixed (ReadWrite, 0xFDB10000, 0x00400000)
+            })
+        }
     }
 }

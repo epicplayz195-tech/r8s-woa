@@ -1,6 +1,7 @@
-work/
-out/
+*.esd
 *.img
 *.wim
-*.esd
+obj/
+out/
 platform-tools/
+work/
