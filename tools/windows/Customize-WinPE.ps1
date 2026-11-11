@@ -11,7 +11,7 @@
   Windows\System32\startnet.cmd, commits, and marks the image bootable again.
 
   Also adds the r8s drivers (D:\woa\drivers: r8slog = RAM log). At boot,
-  WinPE waits 60 s (plug USB in), writes devices, drivers, registry and
+  WinPE logs its steps and the USB state every 15 s for 60 s (plug USB in), then devices, drivers, registry and
   setupapi.dev.log to \\.\R8sLog, then reboots; the firmware saves it as
   \r8s-winlog.txt on the ESP and stops, and Pull-Logs.ps1 fetches it.
   Without the log driver it falls back to a device summary on screen.
@@ -79,14 +79,20 @@ wpeinit
 color 1F
 rem WinPE has no timeout.exe or findstr.exe: ping waits, find filters.
 set LOG=\\.\R8sLog
+(echo [startnet] wpeinit done) > %LOG% 2>nul
 cls
 echo ================= r8s-woa WinPE =================
 echo  Windows is running. Plug USB in now to have it tested.
-echo  In 60 s everything is written to the log, then the
-echo  phone restarts by itself so the firmware can save it.
-ping -n 61 127.0.0.1 >nul
-(echo.) > %LOG% 2>nul || goto nolog
+echo  For 60 s USB is checked every 15 s, then everything is
+echo  written to the log and the phone restarts by itself so
+echo  the firmware can save it.
+for %%i in (1 2 3 4) do (
+  ping -n 16 127.0.0.1 >nul
+  (echo [startnet] USB check %%i & pnputil /enum-devices /connected /class USB & pnputil /enum-devices /problem) > %LOG% 2>&1
+)
+(echo [startnet] writing full log) > %LOG% 2>nul || goto nolog
 call :collect > %LOG% 2>&1
+(echo [startnet] full log written, rebooting) > %LOG% 2>nul
 cls
 echo ================= r8s-woa WinPE =================
 echo  Log written. Restarting in 10 s.

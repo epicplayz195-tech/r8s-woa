@@ -171,6 +171,8 @@ TestMax77705 (
 #define WINLOG_BASE    0xFDB10000ULL
 #define WINLOG_SIZE    SIZE_4MB
 #define WINLOG_MAGIC   0x31474F4C57533852ULL      // "R8SWLOG1"
+#define WINLOG_COPIES  5                          // must match r8slog.sys
+#define WINLOG_SLICE   ((WINLOG_SIZE / WINLOG_COPIES) & ~(UINTN)(SIZE_4KB - 1))
 
 typedef struct {
   UINT64    Magic;
@@ -180,30 +182,84 @@ typedef struct {
   UINT32    Reserved[11];
 } WINLOG_HEADER;
 
+//
+// Some DRAM bits flip during the warm reset; r8slog.sys keeps 5 copies and
+// each bit is taken by majority vote.
+//
+STATIC
+VOID
+WinLogDecode (
+  IN  CONST UINT8  *Base,
+  IN  UINTN        Offset,
+  OUT UINT8        *Out,
+  IN  UINTN        Len,
+  OUT UINTN        *Fixed
+  )
+{
+  UINTN  i;
+  UINTN  c;
+  UINTN  Bit;
+  UINT8  Byte;
+  UINTN  Ones;
+
+  for (i = 0; i < Len; i++) {
+    Byte = 0;
+    for (Bit = 0; Bit < 8; Bit++) {
+      for (c = 0, Ones = 0; c < WINLOG_COPIES; c++) {
+        Ones += (Base[c * WINLOG_SLICE + Offset + i] >> Bit) & 1;
+      }
+
+      if (Ones * 2 > WINLOG_COPIES) {
+        Byte |= (UINT8)(1 << Bit);
+      }
+    }
+
+    for (c = 0; c < WINLOG_COPIES; c++) {
+      if (Base[c * WINLOG_SLICE + Offset + i] != Byte) {
+        (*Fixed)++;
+        break;
+      }
+    }
+
+    Out[i] = Byte;
+  }
+}
+
 STATIC
 VOID
 SaveWindowsLog (
   VOID
   )
 {
-  WINLOG_HEADER      *Hdr;
+  CONST UINT8        *Base;
+  WINLOG_HEADER      Hdr;
   EFI_FILE_PROTOCOL  *File;
+  UINT8              *Text;
   UINTN              Size;
   UINTN              Len;
-  CHAR8              Line[96];
+  UINTN              Fixed;
+  UINTN              c;
+  CHAR8              Line[128];
 
-  Hdr = (WINLOG_HEADER *)(UINTN)WINLOG_BASE;
-  InvalidateDataCacheRange (Hdr, WINLOG_SIZE);
-  if (Hdr->Magic != WINLOG_MAGIC) {
+  Base = (CONST UINT8 *)(UINTN)WINLOG_BASE;
+  InvalidateDataCacheRange ((VOID *)Base, WINLOG_SIZE);
+
+  Fixed = 0;
+  WinLogDecode (Base, 0, (UINT8 *)&Hdr, sizeof (Hdr), &Fixed);
+  if (Hdr.Magic != WINLOG_MAGIC) {
     LogPrint (L"Windows log in RAM                 ... none\n");
     return;
   }
 
-  Size = MIN (Hdr->Length, WINLOG_SIZE - sizeof (*Hdr));
-  LogPrint (L"Windows log in RAM                 ... %d bytes, %d writes\n", (UINT32)Size, Hdr->Writes);
-  if ((mRoot == NULL) || (Size == 0)) {
+  Size = MIN (Hdr.Length, WINLOG_SLICE - sizeof (Hdr));
+  LogPrint (L"Windows log in RAM                 ... %d bytes, %d writes\n", (UINT32)Size, Hdr.Writes);
+  Text = (Size != 0) ? AllocatePool (Size) : NULL;
+  if ((mRoot == NULL) || (Text == NULL)) {
     goto Clear;
   }
+
+  WinLogDecode (Base, sizeof (Hdr), Text, Size, &Fixed);
+  LogPrint (L"    bytes repaired by majority vote: %d\n", (UINT32)Fixed);
 
   if (EFI_ERROR (mRoot->Open (mRoot, &File, L"\\r8s-winlog.txt", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0))) {
     LogPrint (L"    can't open \\r8s-winlog.txt\n");
@@ -211,9 +267,15 @@ SaveWindowsLog (
   }
 
   File->SetPosition (File, MAX_UINT64);        // append (UEFI: MAX_UINT64 = end of file)
-  Len = AsciiSPrint (Line, sizeof (Line), "\r\n===== Windows log (%d bytes, saved by the firmware after reboot) =====\r\n", (UINT32)Size);
+  Len = AsciiSPrint (
+          Line,
+          sizeof (Line),
+          "\r\n===== Windows log (%d bytes, %d repaired, saved by the firmware after reboot) =====\r\n",
+          (UINT32)Size,
+          (UINT32)Fixed
+          );
   File->Write (File, &Len, Line);
-  File->Write (File, &Size, (UINT8 *)(Hdr + 1));
+  File->Write (File, &Size, Text);
   File->Flush (File);
   File->Close (File);
   LogPrint (L"    saved to \\r8s-winlog.txt\n");
@@ -225,8 +287,14 @@ SaveWindowsLog (
   }
 
 Clear:
-  ZeroMem (Hdr, sizeof (*Hdr));
-  WriteBackInvalidateDataCacheRange (Hdr, sizeof (*Hdr));
+  if (Text != NULL) {
+    FreePool (Text);
+  }
+
+  for (c = 0; c < WINLOG_COPIES; c++) {
+    ZeroMem ((VOID *)(Base + c * WINLOG_SLICE), sizeof (Hdr));
+    WriteBackInvalidateDataCacheRange ((VOID *)(Base + c * WINLOG_SLICE), sizeof (Hdr));
+  }
 }
 
 STATIC EFI_GUID mTestVarGuid = { 0x6a1f3c2e, 0x8b4d, 0x4e7a, { 0x9c, 0x51, 0x2d, 0x7e, 0x33, 0x10, 0xa8, 0x5f } };
