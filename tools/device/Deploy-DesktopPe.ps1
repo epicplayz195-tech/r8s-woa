@@ -12,7 +12,8 @@
 param(
     [string]$Source   = "D:\woa\other-pe\winpe_desktop_nodrivers",
     [string]$EspImage = "D:\woa\Mu-r8s-RELEASE\esp-r8s.img.gz",
-    [string]$Scratch  = "D:\woa\scratch"
+    [string]$Scratch  = "D:\woa\scratch",
+    [switch]$BcdOnly    # just re-push efi\microsoft\boot\bcd (fast; after a bcdedit tweak)
 )
 . "$PSScriptRoot\Common.ps1"
 
@@ -21,6 +22,16 @@ foreach ($p in $Source, $EspImage) { if (-not (Test-Path $p)) { throw "Not found
 if (-not (Test-Path "$Source\efi\boot\bootaa64.efi")) { throw "$Source has no efi\boot\bootaa64.efi." }
 if (-not (Test-Path "$Source\sources\boot.wim"))      { throw "$Source has no sources\boot.wim." }
 $null = Get-PartitionNode "esp"
+
+if ($BcdOnly) {
+    Invoke-PhoneShell "mkdir -p /tmp/esp; umount /tmp/esp 2>/dev/null; mount -t vfat /dev/block/by-name/esp /tmp/esp" | Out-Null
+    try {
+        Invoke-Adb push "$Source\efi\microsoft\boot\bcd" /tmp/esp/efi/microsoft/boot/bcd | Out-Null
+        Write-Host "Pushed updated BCD."
+    } finally { Invoke-PhoneShell "sync; umount /tmp/esp" | Out-Null }
+    Write-Host "Reboot -> System, choose internal storage."
+    return
+}
 
 # Boot Manager only boots the WIM image whose header boot index is set; without
 # it winload.efi "isn't found" (0xc0000225).
