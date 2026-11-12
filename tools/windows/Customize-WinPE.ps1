@@ -115,8 +115,16 @@ pnputil /enum-devices /deviceid "ACPI\RWOA0002" | find /i "Status"
 pnputil /enum-devices /deviceid "ACPI\RWOA0002" | find /i "Problem"
 echo  USB controller (ACPI\RWOA0001) status:
 pnputil /enum-devices /deviceid "ACPI\RWOA0001" | find /i "Status"
-echo  USB devices found:
-pnputil /enum-devices /connected /class USB | find /c "Instance ID"
+echo  USB devices:
+pnputil /enum-devices /connected /class USB | find "Instance ID"
+echo  HID (mouse/keyboard) devices:
+pnputil /enum-devices /connected /class HIDClass | find "Instance ID"
+echo  Devices with problems (ID, then problem code):
+pnputil /enum-devices /problem | find "Instance ID"
+pnputil /enum-devices /problem | find "Problem"
+echo  Disks:
+(echo list disk) > %TEMP%\dl.txt
+diskpart /s %TEMP%\dl.txt | find "Disk "
 echo.
 echo  DONE. Hold Power (or Vol Down + Power) to restart.
 echo  (Windows' own restart crashes on this phone for now.)
