@@ -15,8 +15,12 @@
   script writes to X:\Windows\r8s-log.txt (USB state every 15 s for 60 s, then
   devices, drivers, registry and setupapi.dev.log); r8slog.sys copies that
   file into the RAM log every 5 s. The last screen shows the log driver's and
-  USB controller's status for 60 s, then WinPE reboots; the firmware saves the
-  log as \r8s-winlog.txt on the ESP and Pull-Logs.ps1 fetches it.
+  USB controller's status; after a manual restart the firmware saves the
+  log as \r8s-winlog.txt on the ESP and Pull-Logs.ps1 fetches it. The log is
+  also copied after every step to r8s-winlog.txt on any drive Windows mounts
+  (a USB flash drive). WinPE no longer reboots by itself: Windows' restart
+  ends in INTERNAL_POWER_ERROR on this port, so the last screen asks for a
+  manual restart.
 #>
 param(
     [string]$Wim     = "D:\woa\WinPE\sources\boot.wim",
@@ -89,7 +93,7 @@ color 1F
 cls
 echo ================= r8s-woa WinPE =================
 echo  Windows is running. Logging for about 2 minutes.
-echo  The phone restarts by itself at the end. Don't touch it.
+echo  Leave the flash drive plugged in. Don't touch the phone.
 echo.
 for %%i in (1 2 3 4) do (
   call :sleep 15
@@ -97,13 +101,15 @@ for %%i in (1 2 3 4) do (
   echo [startnet] USB check %%i %TIME% >> %LOGF%
   pnputil /enum-devices /connected /class USB >> %LOGF% 2>&1
   pnputil /enum-devices /problem >> %LOGF% 2>&1
+  call :tousb
 )
 echo  Writing the full log ...
 call :collect >> %LOGF% 2>&1
-echo [startnet] full log written, waiting for r8slog to copy it >> %LOGF%
+echo [startnet] full log written >> %LOGF%
+call :tousb
 cls
 echo ================= r8s-woa WinPE =================
-echo  Log written. Restarting in 60 s.
+echo  Log written%USBMSG%.
 echo  Log driver (ACPI\RWOA0002) status:
 pnputil /enum-devices /deviceid "ACPI\RWOA0002" | find /i "Status"
 pnputil /enum-devices /deviceid "ACPI\RWOA0002" | find /i "Problem"
@@ -111,10 +117,24 @@ echo  USB controller (ACPI\RWOA0001) status:
 pnputil /enum-devices /deviceid "ACPI\RWOA0001" | find /i "Status"
 echo  USB devices found:
 pnputil /enum-devices /connected /class USB | find /c "Instance ID"
-call :sleep 60
-echo [startnet] rebooting >> %LOGF%
-call :sleep 6
-wpeutil reboot
+echo.
+echo  DONE. Hold Power (or Vol Down + Power) to restart.
+echo  (Windows' own restart crashes on this phone for now.)
+echo [startnet] done, waiting for a manual restart >> %LOGF%
+call :tousb
+:idle
+call :sleep 3600
+goto idle
+
+:tousb
+rem Copy the log to every drive except X: (WinPE) - a USB flash drive if
+rem Windows mounted one. Sets USBMSG for the last screen.
+set USBMSG=, NO flash drive found
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do (
+  if exist %%d:\ (
+    copy /y %LOGF% %%d:\r8s-winlog.txt >nul 2>&1 && set USBMSG= and copied to the flash drive
+  )
+)
 goto :eof
 
 :sleep
@@ -144,6 +164,9 @@ echo ----- USB controller / log device -----
 pnputil /enum-devices /deviceid "ACPI\RWOA0001" /drivers
 pnputil /enum-devices /deviceid "ACPI\RWOA0002" /drivers
 pnputil /enum-devices /class USB /drivers
+echo ----- disks and volumes (diskpart) -----
+(echo list disk& echo list volume) > %TEMP%\dp.txt
+diskpart /s %TEMP%\dp.txt
 echo ----- registry: Enum\USB, Enum\ACPI -----
 reg query HKLM\SYSTEM\CurrentControlSet\Enum\USB /s
 reg query HKLM\SYSTEM\CurrentControlSet\Enum\ACPI /s

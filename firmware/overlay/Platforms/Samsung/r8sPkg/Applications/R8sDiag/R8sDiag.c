@@ -275,6 +275,21 @@ SaveWindowsLog (
   WinLogDecode (Base, 0, (UINT8 *)&Hdr, sizeof (Hdr), &Fixed);
   if (Hdr.Magic != WINLOG_MAGIC) {
     LogPrint (L"Windows log in RAM                 ... none\n");
+    // What is left in the region: wiped (all 00 / FF), decayed, or never written?
+    for (c = 0; c < WINLOG_COPIES; c++) {
+      CONST UINT8  *S = Base + c * WINLOG_SLICE;
+      UINTN        i, Zero, Ff, Txt;
+
+      for (i = 0, Zero = Ff = Txt = 0; i < SIZE_64KB; i++) {
+        Zero += (S[i] == 0x00);
+        Ff   += (S[i] == 0xFF);
+        Txt  += ((S[i] >= 0x20 && S[i] < 0x7F) || S[i] == '\r' || S[i] == '\n');
+      }
+
+      LogPrint (L"    copy %d: first 64 KB: %d x00, %d xFF, %d text; head %02x %02x %02x %02x %02x %02x %02x %02x len %02x%02x\n",
+                (UINT32)c, (UINT32)Zero, (UINT32)Ff, (UINT32)Txt, S[0], S[1], S[2], S[3], S[4], S[5], S[6], S[7], S[9], S[8]);
+    }
+
     return;
   }
 
