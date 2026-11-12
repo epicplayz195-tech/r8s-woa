@@ -11,7 +11,9 @@
  * majority vote. Shared layout: see R8sDiag.c.
  *
  * The driver also writes a line every 5 s ("alive t=...") and, if Windows
- * bugchecks, the stop code, so a crash or hang shows in the log.
+ * bugchecks, the stop code, so a crash or hang shows in the log. Every 5 s
+ * it also copies new text from X:\Windows\r8s-log.txt, which the startup
+ * script writes, so the script never has to open the device.
  *
  * SPDX-License-Identifier: BSD-2-Clause-Patent
  */
@@ -41,6 +43,8 @@ typedef struct _DEVICE_CONTEXT {
     ULONG           Writes;
     WDFSPINLOCK     Lock;
     WDFTIMER        Timer;
+    WDFWORKITEM     WorkItem;
+    LONGLONG        Mirrored;     /* bytes of \SystemRoot\r8s-log.txt already copied */
     BOOLEAN         BugCheckRegistered;
     KBUGCHECK_CALLBACK_RECORD BugCheckRecord;
 } DEVICE_CONTEXT;
@@ -54,6 +58,7 @@ EVT_WDF_DEVICE_RELEASE_HARDWARE     R8sLogReleaseHardware;
 EVT_WDF_IO_QUEUE_IO_WRITE           R8sLogWrite;
 EVT_WDF_IO_QUEUE_IO_READ            R8sLogRead;
 EVT_WDF_TIMER                       R8sLogTimer;
+EVT_WDF_WORKITEM                    R8sLogMirrorFile;
 KBUGCHECK_CALLBACK_ROUTINE          R8sLogBugCheck;
 
 static DEVICE_CONTEXT *gCtx;           /* for the bugcheck callback */
@@ -234,11 +239,25 @@ R8sLogDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
     }
 
     WDF_TIMER_CONFIG_INIT_PERIODIC(&TimerConfig, R8sLogTimer, 5000);
+    TimerConfig.AutomaticSerialization = FALSE;     /* own spinlock */
     WDF_OBJECT_ATTRIBUTES_INIT(&Attr);
     Attr.ParentObject = Device;
     Status = WdfTimerCreate(&TimerConfig, &Attr, &Ctx->Timer);
     if (!NT_SUCCESS(Status)) {
         return Status;
+    }
+
+    {
+        WDF_WORKITEM_CONFIG WorkConfig;
+
+        WDF_WORKITEM_CONFIG_INIT(&WorkConfig, R8sLogMirrorFile);
+        WorkConfig.AutomaticSerialization = FALSE;
+        WDF_OBJECT_ATTRIBUTES_INIT(&Attr);
+        Attr.ParentObject = Device;
+        Status = WdfWorkItemCreate(&WorkConfig, &Attr, &Ctx->WorkItem);
+        if (!NT_SUCCESS(Status)) {
+            return Status;
+        }
     }
 
     Status = WdfDeviceCreateSymbolicLink(Device, &Link);
@@ -309,6 +328,7 @@ R8sLogReleaseHardware(_In_ WDFDEVICE Device, _In_ WDFCMRESLIST Translated)
     UNREFERENCED_PARAMETER(Translated);
 
     WdfTimerStop(Ctx->Timer, TRUE);
+    WdfWorkItemFlush(Ctx->WorkItem);
     if (Ctx->BugCheckRegistered) {
         KeDeregisterBugCheckCallback(&Ctx->BugCheckRecord);
         Ctx->BugCheckRegistered = FALSE;
@@ -334,6 +354,50 @@ R8sLogTimer(_In_ WDFTIMER Timer)
     P = PutStr(P, End, " s\r\n");
     *P = '\0';
     AppendLine(Ctx, Line, TRUE);
+
+    WdfWorkItemEnqueue(Ctx->WorkItem);     /* copy new text from the file (PASSIVE_LEVEL) */
+}
+
+/*
+ * The startup script writes to a normal file, X:\Windows\r8s-log.txt
+ * (\SystemRoot\r8s-log.txt): cmd.exe redirection to a file always works,
+ * and anything new in it is copied into the log RAM here every 5 s.
+ */
+VOID
+R8sLogMirrorFile(_In_ WDFWORKITEM WorkItem)
+{
+    DEVICE_CONTEXT    *Ctx = GetContext(WdfWorkItemGetParentObject(WorkItem));
+    UNICODE_STRING    Path;
+    OBJECT_ATTRIBUTES Oa;
+    IO_STATUS_BLOCK   Iosb;
+    HANDLE            File;
+    LARGE_INTEGER     Offset;
+    NTSTATUS          Status;
+    static UCHAR      Buffer[16 * 1024];    /* work items run one at a time */
+
+    RtlInitUnicodeString(&Path, L"\\SystemRoot\\r8s-log.txt");
+    InitializeObjectAttributes(&Oa, &Path, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    Status = ZwCreateFile(&File, GENERIC_READ | SYNCHRONIZE, &Oa, &Iosb, NULL, FILE_ATTRIBUTE_NORMAL,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+                          FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0);
+    if (!NT_SUCCESS(Status)) {
+        return;
+    }
+
+    for (;;) {
+        Offset.QuadPart = Ctx->Mirrored;
+        Status = ZwReadFile(File, NULL, NULL, NULL, &Iosb, Buffer, sizeof(Buffer), &Offset, NULL);
+        if (!NT_SUCCESS(Status) || (Iosb.Information == 0)) {
+            break;
+        }
+
+        WdfSpinLockAcquire(Ctx->Lock);
+        AppendRaw(Ctx, Buffer, Iosb.Information);
+        WdfSpinLockRelease(Ctx->Lock);
+        Ctx->Mirrored += (LONGLONG)Iosb.Information;
+    }
+
+    ZwClose(File);
 }
 
 VOID

@@ -4,17 +4,19 @@
   Run as Administrator. Nothing on C: is used.
 
 .DESCRIPTION
-  (WinPE has no findstr.exe or timeout.exe; the screen uses find and ping.)
+  (WinPE has no findstr.exe or timeout.exe, and ping returns at once without
+  networking: the script waits by watching %TIME%.)
 
   DISM can't mount a WIM on a non-NTFS drive (D: is exFAT), so this makes a
   small NTFS virtual disk in D:\woa\scratch, mounts boot.wim there, writes
   Windows\System32\startnet.cmd, commits, and marks the image bootable again.
 
-  Also adds the r8s drivers (D:\woa\drivers: r8slog = RAM log). At boot,
-  WinPE logs its steps and the USB state every 15 s for 60 s (plug USB in), then devices, drivers, registry and
-  setupapi.dev.log to \\.\R8sLog, then reboots; the firmware saves it as
-  \r8s-winlog.txt on the ESP and stops, and Pull-Logs.ps1 fetches it.
-  Without the log driver it falls back to a device summary on screen.
+  Also adds the r8s drivers (D:\woa\drivers: r8slog = RAM log). At boot the
+  script writes to X:\Windows\r8s-log.txt (USB state every 15 s for 60 s, then
+  devices, drivers, registry and setupapi.dev.log); r8slog.sys copies that
+  file into the RAM log every 5 s. The last screen shows the log driver's and
+  USB controller's status for 60 s, then WinPE reboots; the firmware saves the
+  log as \r8s-winlog.txt on the ESP and Pull-Logs.ps1 fetches it.
 #>
 param(
     [string]$Wim     = "D:\woa\WinPE\sources\boot.wim",
@@ -75,48 +77,59 @@ try {
 
     $cmd = @'
 @echo off
+rem r8s-woa WinPE startup. WinPE has no timeout.exe/findstr.exe and ping
+rem returns at once without networking: waits use the clock (%TIME%).
+rem Everything goes to X:\Windows\r8s-log.txt; r8slog.sys copies new text
+rem from it into the RAM log every 5 s.
+set LOGF=%SystemRoot%\r8s-log.txt
+echo [startnet] started %DATE% %TIME% > %LOGF%
 wpeinit
+echo [startnet] wpeinit done %TIME% >> %LOGF%
 color 1F
-rem WinPE has no timeout.exe or findstr.exe: ping waits, find filters.
-set LOG=\\.\R8sLog
-(echo [startnet] wpeinit done) > %LOG% 2>nul
 cls
 echo ================= r8s-woa WinPE =================
-echo  Windows is running. USB must be plugged in BEFORE boot.
-echo  For 60 s USB is checked every 15 s, then everything is
-echo  written to the log and the phone restarts by itself so
-echo  the firmware can save it.
+echo  Windows is running. Logging for about 2 minutes.
+echo  The phone restarts by itself at the end. Don't touch it.
+echo.
 for %%i in (1 2 3 4) do (
-  ping -n 16 127.0.0.1 >nul
-  (echo [startnet] USB check %%i & pnputil /enum-devices /connected /class USB & pnputil /enum-devices /problem) > %LOG% 2>&1
+  call :sleep 15
+  echo  USB check %%i of 4 ...
+  echo [startnet] USB check %%i %TIME% >> %LOGF%
+  pnputil /enum-devices /connected /class USB >> %LOGF% 2>&1
+  pnputil /enum-devices /problem >> %LOGF% 2>&1
 )
-(echo [startnet] writing full log) > %LOG% 2>nul || goto nolog
-call :collect > %LOG% 2>&1
-(echo [startnet] full log written, rebooting) > %LOG% 2>nul
+echo  Writing the full log ...
+call :collect >> %LOGF% 2>&1
+echo [startnet] full log written, waiting for r8slog to copy it >> %LOGF%
 cls
 echo ================= r8s-woa WinPE =================
-echo  Log written. Restarting in 10 s.
-echo  After the restart the firmware saves the log and stops.
-echo  Then hold Vol Up + Power for TWRP and run Pull-Logs.ps1.
-ping -n 11 127.0.0.1 >nul
+echo  Log written. Restarting in 60 s.
+echo  Log driver (ACPI\RWOA0002) status:
+pnputil /enum-devices /deviceid "ACPI\RWOA0002" | find /i "Status"
+pnputil /enum-devices /deviceid "ACPI\RWOA0002" | find /i "Problem"
+echo  USB controller (ACPI\RWOA0001) status:
+pnputil /enum-devices /deviceid "ACPI\RWOA0001" | find /i "Status"
+echo  USB devices found:
+pnputil /enum-devices /connected /class USB | find /c "Instance ID"
+call :sleep 60
+echo [startnet] rebooting >> %LOGF%
+call :sleep 6
 wpeutil reboot
 goto :eof
 
-:nolog
-echo.
-echo  !! %LOG% missing: the log driver did not load. Screen only.
-ping -n 6 127.0.0.1 >nul
-:loop
-cls
-echo ================= r8s-woa WinPE (no log driver) =========
-for /f %%a in ('pnputil /enum-devices /connected ^| find /c "Instance ID"') do echo  Devices found: %%a
-echo ---- USB ----
-pnputil /enum-devices /connected | find "RWOA"
-pnputil /enum-devices /connected /class USB | find "Instance ID"
-echo ---- Devices WITHOUT a working driver ----
-pnputil /enum-devices /problem | find /v "Class GUID" | find /v "Manufacturer" | find /v "Driver Name" | find /v "Device Description"
-ping -n 31 127.0.0.1 >nul
-goto loop
+:sleep
+rem call :sleep N  -  waits N seconds using the clock
+setlocal
+set t=%TIME: =0%
+set /a start=(1%t:~0,2%-100)*3600+(1%t:~3,2%-100)*60+(1%t:~6,2%-100)
+:sleep_loop
+set t=%TIME: =0%
+set /a now=(1%t:~0,2%-100)*3600+(1%t:~3,2%-100)*60+(1%t:~6,2%-100)
+if %now% lss %start% set /a now+=86400
+set /a done=now-start
+if %done% lss %1 goto sleep_loop
+endlocal
+goto :eof
 
 :collect
 echo ===== r8s-woa WinPE log =====
@@ -137,7 +150,7 @@ reg query HKLM\SYSTEM\CurrentControlSet\Enum\ACPI /s
 echo ----- driver packages -----
 pnputil /enum-drivers
 echo ----- setupapi.dev.log -----
-type X:\Windows\INF\setupapi.dev.log
+type %SystemRoot%\INF\setupapi.dev.log
 echo ===== end =====
 exit /b 0
 '@
