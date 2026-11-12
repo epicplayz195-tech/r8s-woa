@@ -13,7 +13,9 @@ param(
     [string]$Source   = "D:\woa\other-pe\winpe_desktop_nodrivers",
     [string]$EspImage = "D:\woa\Mu-r8s-RELEASE\esp-r8s.img.gz",
     [string]$Scratch  = "D:\woa\scratch",
-    [switch]$BcdOnly    # just re-push efi\microsoft\boot\bcd (fast; after a bcdedit tweak)
+    [switch]$BcdOnly,   # just re-push efi\microsoft\boot\bcd (fast; after a bcdedit tweak)
+    [switch]$Trace,     # fast: restore the call tracer + a tracing startup.nsh (no 600 MB re-push)
+    [string]$TraceEfi = "D:\woa\Mu-r8s-RELEASE\R8sTrace.efi"
 )
 . "$PSScriptRoot\Common.ps1"
 
@@ -30,6 +32,43 @@ if ($BcdOnly) {
         Write-Host "Pushed updated BCD."
     } finally { Invoke-PhoneShell "sync; umount /tmp/esp" | Out-Null }
     Write-Host "Reboot -> System, choose internal storage."
+    return
+}
+
+if ($Trace) {
+    if (-not (Test-Path $TraceEfi)) { throw "Not found: $TraceEfi" }
+    Invoke-PhoneShell "mkdir -p /tmp/esp; umount /tmp/esp 2>/dev/null; mount -t vfat /dev/block/by-name/esp /tmp/esp" | Out-Null
+    try {
+        Invoke-PhoneShell "mkdir -p /tmp/esp/EFI/r8s" | Out-Null
+        Invoke-Adb push $TraceEfi /tmp/esp/EFI/r8s/R8sTrace.efi | Out-Null
+        $nsh = @'
+@echo -off
+echo " "
+echo "=== r8s-woa: self-test, then desktop WinPE UNDER THE TRACER ==="
+for %m in fs0 fs1 fs2 fs3 fs4
+  if exist %m:\EFI\r8s\R8sDiag.efi then
+    %m:\EFI\r8s\R8sDiag.efi
+  endif
+endfor
+for %m in fs0 fs1 fs2 fs3 fs4
+  if exist %m:\efi\boot\winpe.efi then
+    %m:
+    echo "Tracing the desktop boot (last line in r8s-trace.txt = where it died) ..."
+    \EFI\r8s\R8sTrace.efi
+    echo " "
+    echo "Returned, lasterror = %lasterror%. Hold Power to restart."
+    goto Done
+  endif
+endfor
+:Done
+'@
+        $nshPath = Join-Path $Scratch "startup.nsh"
+        New-Item -ItemType Directory -Force -Path $Scratch | Out-Null
+        [System.IO.File]::WriteAllText($nshPath, ($nsh -replace "`r?`n", "`r`n"), [System.Text.Encoding]::ASCII)
+        Invoke-Adb push $nshPath /tmp/esp/startup.nsh | Out-Null
+        Write-Host "Tracer restored. Note: R8sTrace loads \efi\boot\winpe.efi (this PE's Boot Manager)."
+    } finally { Invoke-PhoneShell "sync; umount /tmp/esp" | Out-Null }
+    Write-Host "Reboot -> System, internal storage. Then TWRP + Pull-Logs.ps1 for r8s-trace.txt."
     return
 }
 
