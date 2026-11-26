@@ -1,0 +1,51 @@
+name: Check PowerShell scripts
+
+on:
+  push:
+    paths:
+      - "tools/**"
+      - ".github/workflows/check-scripts.yml"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      # Windows PowerShell 5.1, which is what runs these on the user's PC.
+      - name: Parse every script
+        shell: powershell
+        run: |
+          $bad = 0
+          Get-ChildItem tools -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors) { $bad++; $errors | ForEach-Object { Write-Host "::error file=$($_.Extent.File),line=$($_.Extent.StartLineNumber)::$($_.Message)" } }
+            else { Write-Host "ok  $($_.Name)" }
+          }
+          if ($bad) { exit 1 }
+
+      - name: Self-test the backup helpers (gzip hash, GPT parse)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          . .\tools\device\AdbStream.ps1
+          $raw = New-Object byte[] (9MB + 123); (New-Object Random 1).NextBytes($raw)
+          $gzPath = Join-Path $env:RUNNER_TEMP "t.img.gz"
+          $fs = [IO.File]::Create($gzPath)
+          $gz = New-Object IO.Compression.GZipStream($fs, [IO.Compression.CompressionMode]::Compress)
+          $gz.Write($raw, 0, $raw.Length); $gz.Dispose(); $fs.Dispose()
+          $want = (([Security.Cryptography.SHA256]::Create().ComputeHash($raw)) | ForEach-Object { $_.ToString("x2") }) -join ""
+          $got = Get-GzipSha256 $gzPath "test"
+          if ($got.Hash -ne $want -or $got.Bytes -ne $raw.Length) { throw "Get-GzipSha256 wrong: $($got.Hash) $($got.Bytes)" }
+          # Minimal GPT: 4 KiB sectors, entries at LBA 2, 128 x 128 bytes -> primary LBA 0-5, backup 5 sectors.
+          $ss = 4096; $head = New-Object byte[] (64 * $ss)
+          [Text.Encoding]::ASCII.GetBytes("EFI PART").CopyTo($head, $ss)
+          [BitConverter]::GetBytes([uint64]999).CopyTo($head, $ss + 32)
+          [BitConverter]::GetBytes([uint64]2).CopyTo($head, $ss + 72)
+          [BitConverter]::GetBytes([uint32]128).CopyTo($head, $ss + 80)
+          [BitConverter]::GetBytes([uint32]128).CopyTo($head, $ss + 84)
+          $g = Get-GptLayout $head $ss
+          if ($g.PrimarySectors -ne 6 -or $g.BackupSectors -ne 5 -or $g.AltLba -ne 999) { throw "Get-GptLayout wrong: $($g | Out-String)" }
+          Write-Host "helpers ok"

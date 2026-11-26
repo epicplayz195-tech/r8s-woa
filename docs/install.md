@@ -31,6 +31,17 @@ cd D:\woa\r8s-woa\tools\device
 Saves EFS (IMEI), boot, recovery, uh and every LUN's GPT to `D:\woa\backups`.
 Copy that folder somewhere off the PC too.
 
+If Android (e.g. ArtisanROM) is on the phone and you want it back exactly as
+it is later, also make a full image backup now:
+```powershell
+.\Backup-Android.ps1
+```
+Every partition, gzip-compressed on the phone and checked twice (hash on the
+phone while reading, hash again on the PC after decompressing). userdata is
+kept raw and encrypted, so root, modules (Play Integrity etc.), apps and
+settings all come back, but only on this same phone. Saved as
+`D:\woa\backups\android-<bootloader>-<date>`.
+
 If TWRP isn't on the phone right now (r8sios's recovery image replaced it),
 flash TWRP back to RECOVERY first, or restore it from your old dump.
 
@@ -108,7 +119,16 @@ UFS driver.
 
 ## Going back to Android
 
-TWRP: restore `uh.img`, `boot.img`, `recovery.img` from the backup with `dd`,
-restore the GPT (`sgdisk --load-backup` or write `gpt_sdX.bin`), or simply
-flash the full stock firmware with Odin and then restore `efs` / `sec_efs`
-from the backup.
+With a backup from `Backup-Android.ps1` (phone in TWRP):
+```powershell
+.\Restore-Android.ps1
+```
+If the phone is still partitioned for Windows, the first run puts the old
+partition table back (esp and win are deleted) and asks you to reboot TWRP;
+run it again and it writes the images back and checks each one. It restores
+the Android partitions only and never touches efs/sec_efs unless you name
+them with `-Partitions`.
+
+Without one: restore `uh.img`, `boot.img`, `recovery.img` from the
+`Backup-Phone.ps1` backup with `dd`, restore the GPT, or flash the full stock
+firmware with Odin and then restore `efs` / `sec_efs` from the backup.
