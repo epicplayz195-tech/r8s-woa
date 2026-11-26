@@ -26,7 +26,8 @@
 param(
     [string]$OutDir = "D:\woa\backups",
     [switch]$SkipPcVerify,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$Fresh      # don't resume an unfinished backup; start a new folder
 )
 . "$PSScriptRoot\Common.ps1"
 . "$PSScriptRoot\AdbStream.ps1"
@@ -37,8 +38,25 @@ if ($OutDir -match '^[Cc]:') { throw "Refusing to write a multi-GB backup to C:.
 $missing = Invoke-PhoneShell "for t in gzip mkfifo sha256sum tee dd blockdev; do command -v `$t >/dev/null 2>&1 || echo `$t; done"
 if ($missing) { throw "TWRP is missing: $($missing -replace "`n", ', '). This TWRP build can't run the backup." }
 
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$dest = Join-Path $OutDir "android-$bl-$stamp"
+# Resume the newest unfinished backup of this bootloader unless -Fresh.
+$dest = $null
+$done = @{}
+if (-not $Fresh) {
+    $dest = Get-ChildItem $OutDir -Directory -Filter "android-$bl-*" -ErrorAction SilentlyContinue |
+        Where-Object { -not (Test-Path (Join-Path $_.FullName "manifest.json")) -and (Test-Path (Join-Path $_.FullName "progress.json")) } |
+        Sort-Object Name | Select-Object -Last 1 -ExpandProperty FullName
+}
+if ($dest) {
+    $list = Get-Content (Join-Path $dest "progress.json") -Raw | ConvertFrom-Json   # PS 5.1: assign first, so the array enumerates
+    foreach ($r in $list) {
+        $f = Join-Path $dest $r.File
+        if ((Test-Path $f) -and (Get-Item $f).Length -eq [int64]$r.GzBytes) { $done[$r.Name] = $r }
+    }
+    Write-Host "Resuming $dest ($($done.Count) partitions already done and checked)." -ForegroundColor Cyan
+} else {
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $dest = Join-Path $OutDir "android-$bl-$stamp"
+}
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Invoke-PhoneShell "getprop" | Set-Content (Join-Path $dest "getprop.txt")
 Invoke-PhoneShell "ls -l /dev/block/by-name/" | Set-Content (Join-Path $dest "by-name.txt")
@@ -64,8 +82,8 @@ $parts = @(Get-PhonePartitions | Where-Object Size -gt 0 | Sort-Object Size)
 if (-not ($parts | Where-Object Name -eq "userdata")) {
     if (-not $Force) { throw "No 'userdata' partition. If the phone is still partitioned for Windows (esp/win), Android isn't installed. Use -Force to back up anyway." }
 }
-$rawTotal = ($parts | Measure-Object Size -Sum).Sum
-$userdataSize = ($parts | Where-Object Name -eq "userdata" | Select-Object -First 1).Size
+$rawTotal = ($parts | Where-Object { -not $done.ContainsKey($_.Name) } | Measure-Object Size -Sum).Sum
+$userdataSize = ($parts | Where-Object { $_.Name -eq "userdata" -and -not $done.ContainsKey($_.Name) } | Select-Object -First 1).Size
 $estimate = $rawTotal - $userdataSize + ($dataUsedKB * 1KB) + 2GB
 $drive = Get-PSDrive -Name ($dest.Substring(0, 1))
 Write-Host ("{0} partitions, {1} raw. Expected backup size: about {2} or less. Free on {3}: {4}" -f `
@@ -97,6 +115,11 @@ $swAll = [Diagnostics.Stopwatch]::StartNew()
 $i = 0
 foreach ($p in $parts) {
     $i++
+    if ($done.ContainsKey($p.Name) -and [int64]$done[$p.Name].Size -eq $p.Size) {
+        Write-Host ("[{0}/{1}] {2}: already done" -f $i, $parts.Count, $p.Name)
+        $results += $done[$p.Name]
+        continue
+    }
     $file = "$($p.Name).img.gz"
     $out = Join-Path $dest $file
     Write-Host ("[{0}/{1}] {2} ({3})" -f $i, $parts.Count, $p.Name, (Format-Size $p.Size))
@@ -104,6 +127,11 @@ foreach ($p in $parts) {
            "(sha256sum < /tmp/r8s_f > /tmp/r8s_sha) & " +
            "dd if=$($p.Node) bs=4194304 2>/tmp/r8s_dd | tee /tmp/r8s_f | gzip -1 -c; wait"
     $t = Receive-AdbStream $cmd $out "Backing up $($p.Name)"
+    if ((Invoke-AdbRaw @("get-state")).Out -ne "recovery") {
+        Remove-Item $out -ErrorAction SilentlyContinue
+        throw ("The phone disconnected while saving $($p.Name). Nothing on the phone was changed. " +
+               "Plug it back in, boot TWRP, and run .\Backup-Android.ps1 again: it continues from $($p.Name).")
+    }
 
     $phoneSha = ((Invoke-PhoneShell "cat /tmp/r8s_sha") -split "\s+")[0]
     $ddLog = Invoke-PhoneShell "cat /tmp/r8s_dd"
@@ -124,6 +152,7 @@ foreach ($p in $parts) {
     }
     Write-Host ("    {0} -> {1} in {2:mm\:ss}{3}" -f (Format-Size $p.Size), (Format-Size $gzBytes), $t, $(if ($verified) { ", verified" } else { "" }))
     $results += [pscustomobject]@{ Name = $p.Name; Node = $p.Node; Size = $p.Size; Sha256 = $phoneSha; File = $file; GzBytes = $gzBytes }
+    ConvertTo-Json -InputObject @($results) -Depth 3 | Set-Content (Join-Path $dest "progress.json")
 }
 
 $manifest = [pscustomobject]@{
@@ -135,6 +164,7 @@ $manifest = [pscustomobject]@{
     Luns       = $luns
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $dest "manifest.json")
+Invoke-PhoneShell "mount /data 2>/dev/null; true" | Out-Null   # so TWRP shows the storage size again
 
 $total = ($results | Measure-Object GzBytes -Sum).Sum
 Write-Host ("`nBackup complete: {0}`n{1} partitions, {2} on disk, took {3:hh\:mm\:ss}." -f $dest, $results.Count, (Format-Size $total), $swAll.Elapsed)

@@ -25,6 +25,7 @@ function Format-Size([double]$Bytes) {
 
 # Run ShellCmd on the phone (adb exec-out) and save its stdout to OutFile.
 function Receive-AdbStream([string]$ShellCmd, [string]$OutFile, [string]$Label) {
+    $drive = New-Object System.IO.DriveInfo ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($OutFile)))
     $p = Start-AdbProcess "exec-out" $ShellCmd
     $err = $p.StandardError.ReadToEndAsync()
     $fs = [System.IO.File]::Create($OutFile)
@@ -33,7 +34,11 @@ function Receive-AdbStream([string]$ShellCmd, [string]$OutFile, [string]$Label) 
         $task = $p.StandardOutput.BaseStream.CopyToAsync($fs, 4MB)
         while (-not $task.Wait(1000)) {
             $mbs = $fs.Length / 1MB / [math]::Max($sw.Elapsed.TotalSeconds, 1)
-            Write-Progress -Activity $Label -Status ("{0} received, {1:N0} MB/s" -f (Format-Size $fs.Length), $mbs)
+            Write-Progress -Activity $Label -Status ("{0} received, {1:N0} MB/s, {2} free on the PC" -f (Format-Size $fs.Length), $mbs, (Format-Size $drive.AvailableFreeSpace))
+            if ($drive.AvailableFreeSpace -lt 1GB) {
+                try { $p.Kill() } catch {}
+                throw "The PC's drive $($drive.Name) is almost full. Free up space and run the script again; it resumes."
+            }
         }
         if ($task.IsFaulted) { throw $task.Exception }
     } finally {
