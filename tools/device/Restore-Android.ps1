@@ -142,6 +142,7 @@ Write-Host "`nWill restore $($todo.Count) partitions:"
 $todo | ForEach-Object { Write-Host ("  {0,-16} {1}" -f $_.Name, (Format-Size ([int64]$_.Size))) }
 Confirm-Danger "This overwrites those partitions on the phone (Windows or anything else on them is lost)."
 
+Install-SparseHelper
 $still = Dismount-PhoneFilesystems
 if ($still) { throw "TWRP still has $($still -join ', ') mounted and won't let go. Reboot TWRP, don't enter a PIN or decrypt, and run this again." }
 $swAll = [Diagnostics.Stopwatch]::StartNew()
@@ -150,15 +151,28 @@ foreach ($p in $todo) {
     $i++
     $node = $now[$p.Name].Node
     Write-Host ("[{0}/{1}] {2} -> {3}" -f $i, $todo.Count, $p.Name, $node)
-    $t = Send-AdbStream "gzip -dc | dd of=$node bs=4194304 2>/tmp/r8s_dd; sync" (Join-Path $BackupDir $p.File) "Restoring $($p.Name)"
-    $ddLog = Invoke-PhoneShell "cat /tmp/r8s_dd; rm -f /tmp/r8s_dd"
-    if ($ddLog -match '(\d+) bytes' -and [int64]$Matches[1] -ne [int64]$p.Size) {
-        throw "$($p.Name): wrote $($Matches[1]) of $($p.Size) bytes. dd said: $ddLog"
-    }
-    if (-not $NoVerify) {
-        Write-Host "    checking..."
-        $sha = ((Invoke-PhoneShell "sha256sum $node") -split "\s+")[0]
-        if ($sha -ne $p.Sha256) { throw "$($p.Name): read-back hash $sha doesn't match the backup $($p.Sha256). Run the restore again." }
+    if ($p.Format -eq "sparse") {
+        $t = Send-AdbStream "/tmp/r8s-sparse restore $node 2>/tmp/r8s_err" (Join-Path $BackupDir $p.File) "Restoring $($p.Name)"
+        $err = Invoke-PhoneShell "cat /tmp/r8s_err; rm -f /tmp/r8s_err"
+        if ($err -notmatch 'restored chunks \d+ digest ([0-9a-f]{16})' -or $Matches[1] -ne $p.Digest) {
+            throw "$($p.Name): restore failed on the phone: $err"
+        }
+        if (-not $NoVerify) {
+            Write-Host "    checking..."
+            $d = (Invoke-PhoneShell "/tmp/r8s-sparse digest $node") -split "\s+"
+            if ($d[2] -ne $p.Digest) { throw "$($p.Name): read-back digest $($d[2]) doesn't match the backup $($p.Digest). Run the restore again." }
+        }
+    } else {
+        $t = Send-AdbStream "gzip -dc | dd of=$node bs=4194304 2>/tmp/r8s_dd; sync" (Join-Path $BackupDir $p.File) "Restoring $($p.Name)"
+        $ddLog = Invoke-PhoneShell "cat /tmp/r8s_dd; rm -f /tmp/r8s_dd"
+        if ($ddLog -match '(\d+) bytes' -and [int64]$Matches[1] -ne [int64]$p.Size) {
+            throw "$($p.Name): wrote $($Matches[1]) of $($p.Size) bytes. dd said: $ddLog"
+        }
+        if (-not $NoVerify) {
+            Write-Host "    checking..."
+            $sha = ((Invoke-PhoneShell "sha256sum $node") -split "\s+")[0]
+            if ($sha -ne $p.Sha256) { throw "$($p.Name): read-back hash $sha doesn't match the backup $($p.Sha256). Run the restore again." }
+        }
     }
     Write-Host ("    done in {0:mm\:ss}{1}" -f $t, $(if ($NoVerify) { "" } else { ", verified" }))
 }
