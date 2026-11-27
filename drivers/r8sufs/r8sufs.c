@@ -651,6 +651,7 @@ DriverEntry(PVOID DriverObject, PVOID RegistryPath)
     init.HwInitialize = HwInitialize;
     init.HwStartIo = HwStartIo;
     init.HwInterrupt = HwInterrupt;
+#pragma warning(suppress: 4152)    /* storport declares HwFindAdapter as PVOID */
     init.HwFindAdapter = HwFindAdapter;
     init.HwResetBus = HwResetBus;
     init.HwAdapterControl = HwAdapterControl;
