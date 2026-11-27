@@ -24,7 +24,7 @@ ACPI: `\_SB.TSC0`, `_HID` `RWOA0003`, `_CRS` = the three pinctrl blocks.
 
 ## Reading what it did
 
-`X:\r8s\install-log.txt`, or `regedit` →
+After a restart: boot TWRP, run `tools\device\Pull-Logs.ps1`; the driver install and the touch state (every 30 s) are in `r8s-winlog.txt`. On the phone: `regedit` →
 `HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\RWOA0003\0\Device Parameters`:
 
 | State | Meaning |

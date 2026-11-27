@@ -76,18 +76,24 @@ try {
 
         $cmd = @'
 @echo off
-rem r8s-woa: trust the test certificate, then install every driver package in X:\r8s\drivers.
-set LOG=X:\r8s\install-log.txt
-echo r8s-woa driver install %DATE% %TIME% > %LOG%
+rem r8s-woa: install every driver package in X:\r8s\drivers, then log the touch driver's
+rem state every 30 s. The log is X:\Windows\r8s-log.txt, which r8slog.sys (installed first)
+rem mirrors into RAM: after a restart the firmware saves it, and Pull-Logs.ps1 fetches it.
+set LOG=X:\Windows\r8s-log.txt
+echo [drivers] install %DATE% %TIME% >> %LOG%
 for /r X:\r8s\drivers %%c in (*.cer) do (
   certutil -f -addstore Root "%%c" >> %LOG% 2>&1
   certutil -f -addstore TrustedPublisher "%%c" >> %LOG% 2>&1
 )
-for /r X:\r8s\drivers %%i in (*.inf) do pnputil /add-driver "%%i" /install >> %LOG% 2>&1
-echo. >> %LOG%
-echo Touch driver state (State 1 = running; see docs\touch.md): >> %LOG%
+for /r X:\r8s\drivers %%i in (*.inf) do (
+  echo [drivers] %%i >> %LOG%
+  drvload "%%i" >> %LOG% 2>&1 || pnputil /add-driver "%%i" /install >> %LOG% 2>&1
+)
+:loop
+echo [touch] %TIME% >> %LOG%
 reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\RWOA0003" /s >> %LOG% 2>&1
-if not "%1"=="/auto" type %LOG%
+ping -n 31 127.0.0.1 > nul
+goto loop
 '@
         [IO.File]::WriteAllText((Join-Path $mount "r8s\install-drivers.cmd"), ($cmd -replace "`r?`n", "`r`n"), [Text.Encoding]::ASCII)
 
@@ -96,7 +102,7 @@ if not "%1"=="/auto" type %LOG%
         reg load HKLM\R8S_PE_SW $hive | Out-Null
         try {
             reg add "HKLM\R8S_PE_SW\Microsoft\Windows\CurrentVersion\Run" /v r8s-drivers /t REG_SZ /d "cmd /c X:\r8s\install-drivers.cmd /auto" /f | Out-Null
-            Write-Host "    install-drivers.cmd runs when the desktop starts (log: X:\r8s\install-log.txt)"
+            Write-Host "    install-drivers.cmd runs when the desktop starts (log: X:\Windows\r8s-log.txt, kept across a restart by r8slog)"
         } finally {
             [gc]::Collect(); Start-Sleep -Seconds 1
             reg unload HKLM\R8S_PE_SW | Out-Null
