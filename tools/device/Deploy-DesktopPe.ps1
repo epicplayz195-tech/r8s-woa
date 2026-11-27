@@ -39,6 +39,8 @@ $null = Get-PartitionNode "esp"
 if ($BcdOnly) {
     Invoke-PhoneShell "mkdir -p /tmp/esp; umount /tmp/esp 2>/dev/null; mount -t vfat /dev/block/by-name/esp /tmp/esp" | Out-Null
     try {
+        # Stale hive transaction logs next to a new BCD can be replayed onto it.
+        Invoke-PhoneShell "rm -f /tmp/esp/efi/microsoft/boot/bcd.LOG*; true" | Out-Null
         Invoke-Adb push "$Source\efi\microsoft\boot\bcd" /tmp/esp/efi/microsoft/boot/bcd | Out-Null
         Write-Host "Pushed updated BCD."
     } finally { Invoke-PhoneShell "sync; umount /tmp/esp" | Out-Null }
