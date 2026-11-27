@@ -89,9 +89,14 @@ for /r X:\r8s\drivers %%i in (*.inf) do (
   echo [drivers] %%i >> %LOG%
   drvload "%%i" >> %LOG% 2>&1 || pnputil /add-driver "%%i" /install >> %LOG% 2>&1
 )
+ping -n 16 127.0.0.1 > nul
+echo [devices] input devices 15 s after the install >> %LOG%
+pnputil /enum-devices /class HIDClass >> %LOG% 2>&1
+pnputil /enum-devices /problem >> %LOG% 2>&1
+reg query "HKLM\SYSTEM\CurrentControlSet\Enum\HID" /s /v DeviceDesc >> %LOG% 2>&1
 :loop
 echo [touch] %TIME% >> %LOG%
-reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\RWOA0003" /s >> %LOG% 2>&1
+reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\RWOA0003\0\Device Parameters" >> %LOG% 2>&1
 ping -n 31 127.0.0.1 > nul
 goto loop
 '@

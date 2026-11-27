@@ -187,6 +187,8 @@ typedef struct _DEVICE_CONTEXT {
     ULONG       ResX, ResY;
     FINGER      Finger[ZT_MAX_FINGERS];
     ULONG       Reads, Events, FailedReads;
+    volatile LONG Ioctl[10];        /* HID IOCTLs seen, by kind (see IoctlIndex) */
+    volatile LONG ReadRequests, Sent, Dropped;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetContext)
@@ -530,8 +532,10 @@ SendReport(PDEVICE_CONTEXT Ctx)
     }
     rep.ContactCount = (UCHAR)n;
     if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(Ctx->ReadQueue, &req))) {
-        return;                     /* nobody listening: drop it, the next one is newer anyway */
+        InterlockedIncrement(&Ctx->Dropped);    /* nobody listening: the next one is newer anyway */
+        return;
     }
+    InterlockedIncrement(&Ctx->Sent);
     status = WdfRequestRetrieveOutputMemory(req, &mem);
     if (NT_SUCCESS(status)) {
         status = WdfMemoryCopyFromBuffer(mem, 0, &rep, sizeof(rep));
@@ -575,6 +579,26 @@ ReadPoints(PDEVICE_CONTEXT Ctx)
 
 /* ---------------------------------------------------------------- thread */
 
+static VOID
+WriteCounters(PDEVICE_CONTEXT Ctx)
+{
+    static const PCWSTR names[10] = {
+        L"IoctlDeviceDescriptor", L"IoctlReportDescriptor", L"IoctlAttributes", L"IoctlReadReport",
+        L"IoctlGetFeature", L"IoctlActivate", L"IoctlDeactivate", L"IoctlIdle", L"IoctlGetString", L"IoctlOther"
+    };
+    ULONG i;
+
+    SetValue(Ctx, L"Reads", Ctx->Reads);
+    SetValue(Ctx, L"Events", Ctx->Events);
+    SetValue(Ctx, L"FailedReads", Ctx->FailedReads);
+    SetValue(Ctx, L"ReadRequests", (ULONG)Ctx->ReadRequests);
+    SetValue(Ctx, L"ReportsSent", (ULONG)Ctx->Sent);
+    SetValue(Ctx, L"ReportsDropped", (ULONG)Ctx->Dropped);
+    for (i = 0; i < 10; i++) {
+        SetValue(Ctx, names[i], (ULONG)Ctx->Ioctl[i]);
+    }
+}
+
 VOID
 TouchThread(PVOID Context)
 {
@@ -607,6 +631,7 @@ TouchThread(PVOID Context)
         PsTerminateSystemThread(STATUS_SUCCESS);      /* State says why */
     }
     SetValue(ctx, L"State", 1);              /* running */
+    WriteCounters(ctx);
 
     for (;;) {
         LARGE_INTEGER now;
@@ -618,11 +643,9 @@ TouchThread(PVOID Context)
         if (GpioGet(ctx->Gpa1, PIN_ATTN) == 0 && ReadPoints(ctx)) {
             activeUntil = now.QuadPart + 100 * 10000;       /* fast polling for 100 ms */
         }
-        if (++ticks >= 4000) {               /* every ~30 s: counters into the registry */
+        if (++ticks >= 1000) {               /* every ~10 s: counters into the registry */
             ticks = 0;
-            SetValue(ctx, L"Reads", ctx->Reads);
-            SetValue(ctx, L"Events", ctx->Events);
-            SetValue(ctx, L"FailedReads", ctx->FailedReads);
+            WriteCounters(ctx);
         }
         if (KeWaitForSingleObject(&ctx->StopEvent, Executive, KernelMode, FALSE,
                                   now.QuadPart < activeUntil ? &active : &idle) == STATUS_SUCCESS) {
@@ -734,6 +757,23 @@ EvtD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
 
 /* ---------------------------------------------------------------- HID IOCTLs */
 
+static ULONG
+IoctlIndex(ULONG Code)
+{
+    switch (Code) {
+    case IOCTL_HID_GET_DEVICE_DESCRIPTOR:           return 0;
+    case IOCTL_HID_GET_REPORT_DESCRIPTOR:           return 1;
+    case IOCTL_HID_GET_DEVICE_ATTRIBUTES:           return 2;
+    case IOCTL_HID_READ_REPORT:                     return 3;
+    case IOCTL_HID_GET_FEATURE:                     return 4;
+    case IOCTL_HID_ACTIVATE_DEVICE:                 return 5;
+    case IOCTL_HID_DEACTIVATE_DEVICE:               return 6;
+    case IOCTL_HID_SEND_IDLE_NOTIFICATION_REQUEST:  return 7;
+    case IOCTL_HID_GET_STRING:                      return 8;
+    default:                                        return 9;
+    }
+}
+
 static NTSTATUS
 CopyOut(WDFREQUEST Request, const VOID *Data, ULONG Size)
 {
@@ -759,6 +799,7 @@ EvtInternalIoctl(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen, size_t InLen
     UNREFERENCED_PARAMETER(OutLen);
     UNREFERENCED_PARAMETER(InLen);
 
+    InterlockedIncrement(&ctx->Ioctl[IoctlIndex(Code)]);
     switch (Code) {
     case IOCTL_HID_GET_DEVICE_DESCRIPTOR:
         status = CopyOut(Request, &g_HidDescriptor, sizeof(g_HidDescriptor));
@@ -781,6 +822,7 @@ EvtInternalIoctl(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen, size_t InLen
     }
 
     case IOCTL_HID_READ_REPORT:
+        InterlockedIncrement(&ctx->ReadRequests);
         status = WdfRequestForwardToIoQueue(Request, ctx->ReadQueue);
         if (NT_SUCCESS(status)) {
             return;                     /* completed by the thread with the next touch */
