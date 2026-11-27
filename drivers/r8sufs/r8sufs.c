@@ -27,7 +27,6 @@
 
 #include <ntddk.h>
 #include <storport.h>
-#include <scsi.h>
 
 /* ---------------------------------------------------------------- controller */
 
