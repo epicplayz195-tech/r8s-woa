@@ -644,11 +644,15 @@ HwFindAdapter(PVOID DeviceExtension, PVOID HwContext, PVOID BusInformation, PCHA
     ConfigInfo->Master = TRUE;
     ConfigInfo->CachesData = FALSE;
     ConfigInfo->NumberOfBuses = 1;
-    ConfigInfo->MaximumNumberOfTargets = 1;
+    /* Target 0 is the disk; the initiator (us) must have another id or target 0 is never scanned. */
+    ConfigInfo->MaximumNumberOfTargets = 2;
+    ConfigInfo->InitiatorBusId[0] = 1;
     ConfigInfo->MaximumNumberOfLogicalUnits = 1;
     ConfigInfo->MapBuffers = STOR_MAP_ALL_BUFFERS_INCLUDING_READ_WRITE;
     ConfigInfo->Dma64BitAddresses = 0;
-    ConfigInfo->SynchronizationModel = StorSynchronizeFullDuplex;
+    ConfigInfo->Dma32BitAddresses = TRUE;
+    ConfigInfo->SynchronizationModel = StorSynchronizeHalfDuplex;
+    ConfigInfo->MaxNumberOfIO = 1;
     ConfigInfo->InterruptSynchronizationMode = InterruptSupportNone;
     ConfigInfo->MaxIOsPerLun = 1;
     ConfigInfo->InitialLunQueueDepth = 1;
@@ -711,6 +715,11 @@ DriverEntry(PVOID DriverObject, PVOID RegistryPath)
     init.AutoRequestSense = TRUE;
     init.MultipleRequestPerLu = FALSE;
     init.NeedPhysicalAddresses = TRUE;
+    /* Settings of the Galaxy S9+ Exynos9810Ufs miniport (boots Windows 11): without
+     * NOT_REQUIRE_IO_PORT Storport wants an I/O port resource and start fails 0xC0000225. */
+    init.FeatureSupport = STOR_FEATURE_SET_ADAPTER_INTERFACE_TYPE | STOR_FEATURE_ADAPTER_NOT_REQUIRE_IO_PORT;
+    init.SrbTypeFlags = SRB_TYPE_FLAG_SCSI_REQUEST_BLOCK;
+    init.AddressTypeFlags = ADDRESS_TYPE_FLAG_BTL8;
 
     /*
      * Register for every bus an ACPI device can come in on. Storport matches the PDO's legacy
