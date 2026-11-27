@@ -78,6 +78,12 @@
 
 #define REPORTID_TOUCH      1
 #define REPORTID_MAXCOUNT   2
+#define REPORTID_MOUSE      3
+
+/* Device Parameters\Mode: what the panel shows up as. */
+#define MODE_MOUSE          1               /* one finger = an absolute mouse, touching = left button (default) */
+#define MODE_TOUCH          2               /* a 10-finger HID touch screen */
+#define MODE_BOTH           3
 #define HID_MAX_X           32767
 
 #define FINGER_COLLECTION \
@@ -132,6 +138,34 @@ static const UCHAR g_ReportDescriptor[] = {
     0x09, 0x55,             /*   Usage (Contact Count Maximum) */
     0x25, ZT_MAX_FINGERS,   /*   Logical Maximum (10) */
     0xB1, 0x02,             /*   Feature (Data,Var,Abs) */
+    0xC0,                   /* End Collection */
+
+    /* Absolute mouse: what every Windows (WinPE too) moves the pointer with. */
+    0x05, 0x01,             /* Usage Page (Generic Desktop) */
+    0x09, 0x02,             /* Usage (Mouse) */
+    0xA1, 0x01,             /* Collection (Application) */
+    0x85, REPORTID_MOUSE,   /*   Report ID */
+    0x09, 0x01,             /*   Usage (Pointer) */
+    0xA1, 0x00,             /*   Collection (Physical) */
+    0x05, 0x09,             /*     Usage Page (Button) */
+    0x19, 0x01,             /*     Usage Minimum (1) */
+    0x29, 0x01,             /*     Usage Maximum (1) */
+    0x15, 0x00,             /*     Logical Minimum (0) */
+    0x25, 0x01,             /*     Logical Maximum (1) */
+    0x75, 0x01,             /*     Report Size (1) */
+    0x95, 0x01,             /*     Report Count (1) */
+    0x81, 0x02,             /*     Input (Data,Var,Abs) */
+    0x95, 0x07,             /*     Report Count (7) */
+    0x81, 0x03,             /*     Input (Const) */
+    0x05, 0x01,             /*     Usage Page (Generic Desktop) */
+    0x09, 0x30,             /*     Usage (X) */
+    0x09, 0x31,             /*     Usage (Y) */
+    0x15, 0x00,             /*     Logical Minimum (0) */
+    0x26, 0xFF, 0x7F,       /*     Logical Maximum (32767) */
+    0x75, 0x10,             /*     Report Size (16) */
+    0x95, 0x02,             /*     Report Count (2) */
+    0x81, 0x02,             /*     Input (Data,Var,Abs) */
+    0xC0,                   /*   End Collection */
     0xC0                    /* End Collection */
 };
 
@@ -148,6 +182,13 @@ typedef struct _TOUCH_REPORT {
     TOUCH_CONTACT Contact[ZT_MAX_FINGERS];
     UCHAR         ContactCount;
 } TOUCH_REPORT;
+
+typedef struct _MOUSE_REPORT {
+    UCHAR  ReportId;
+    UCHAR  Buttons;         /* bit 0 = left */
+    USHORT X;
+    USHORT Y;
+} MOUSE_REPORT;
 
 typedef struct _MAXCOUNT_REPORT {
     UCHAR ReportId;
@@ -189,6 +230,10 @@ typedef struct _DEVICE_CONTEXT {
     ULONG       Reads, Events, FailedReads;
     volatile LONG Ioctl[10];        /* HID IOCTLs seen, by kind (see IoctlIndex) */
     volatile LONG ReadRequests, Sent, Dropped;
+    ULONG       Mode;
+    BOOLEAN     MouseDown;
+    USHORT      MouseX, MouseY;
+    LONG        FeatureStatus, FeatureInLen, FeatureOutLen, FeatureId;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetContext)
@@ -506,15 +551,31 @@ HandleEvent(PDEVICE_CONTEXT Ctx, const UCHAR *E)
     }
 }
 
-/* Hand the current contacts to a pended read, if HID class has one waiting. */
+/* Complete one pended IOCTL_HID_READ_REPORT with Data, if HID class has one waiting. */
 static VOID
-SendReport(PDEVICE_CONTEXT Ctx)
+Deliver(PDEVICE_CONTEXT Ctx, const VOID *Data, ULONG Size)
 {
-    TOUCH_REPORT rep;
     WDFREQUEST req;
     WDFMEMORY mem;
-    ULONG i, n = 0;
     NTSTATUS status;
+
+    if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(Ctx->ReadQueue, &req))) {
+        InterlockedIncrement(&Ctx->Dropped);    /* nobody listening: the next one is newer anyway */
+        return;
+    }
+    InterlockedIncrement(&Ctx->Sent);
+    status = WdfRequestRetrieveOutputMemory(req, &mem);
+    if (NT_SUCCESS(status)) {
+        status = WdfMemoryCopyFromBuffer(mem, 0, (PVOID)Data, Size);
+    }
+    WdfRequestCompleteWithInformation(req, status, NT_SUCCESS(status) ? Size : 0);
+}
+
+static VOID
+SendTouch(PDEVICE_CONTEXT Ctx)
+{
+    TOUCH_REPORT rep;
+    ULONG i, n = 0;
 
     RtlZeroMemory(&rep, sizeof(rep));
     rep.ReportId = REPORTID_TOUCH;
@@ -527,20 +588,50 @@ SendReport(PDEVICE_CONTEXT Ctx)
             n++;
         }
     }
-    if (n == 0) {
+    if (n != 0) {
+        rep.ContactCount = (UCHAR)n;
+        Deliver(Ctx, &rep, sizeof(rep));
+    }
+}
+
+/* The lowest-numbered finger that is down drives the pointer; any finger down = left button. */
+static VOID
+SendMouse(PDEVICE_CONTEXT Ctx)
+{
+    MOUSE_REPORT rep;
+    BOOLEAN down = FALSE;
+    ULONG i;
+
+    for (i = 0; i < ZT_MAX_FINGERS; i++) {
+        if (Ctx->Finger[i].Down) {
+            Ctx->MouseX = Ctx->Finger[i].X;
+            Ctx->MouseY = Ctx->Finger[i].Y;
+            down = TRUE;
+            break;
+        }
+    }
+    if (!down && !Ctx->MouseDown) {
         return;
     }
-    rep.ContactCount = (UCHAR)n;
-    if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(Ctx->ReadQueue, &req))) {
-        InterlockedIncrement(&Ctx->Dropped);    /* nobody listening: the next one is newer anyway */
-        return;
+    Ctx->MouseDown = down;
+    rep.ReportId = REPORTID_MOUSE;
+    rep.Buttons = down ? 1 : 0;
+    rep.X = Ctx->MouseX;
+    rep.Y = Ctx->MouseY;
+    Deliver(Ctx, &rep, sizeof(rep));
+}
+
+static VOID
+SendReports(PDEVICE_CONTEXT Ctx)
+{
+    ULONG i;
+
+    if (Ctx->Mode & MODE_TOUCH) {
+        SendTouch(Ctx);
     }
-    InterlockedIncrement(&Ctx->Sent);
-    status = WdfRequestRetrieveOutputMemory(req, &mem);
-    if (NT_SUCCESS(status)) {
-        status = WdfMemoryCopyFromBuffer(mem, 0, &rep, sizeof(rep));
+    if (Ctx->Mode & MODE_MOUSE) {
+        SendMouse(Ctx);
     }
-    WdfRequestCompleteWithInformation(req, status, NT_SUCCESS(status) ? sizeof(rep) : 0);
     for (i = 0; i < ZT_MAX_FINGERS; i++) {
         Ctx->Finger[i].Lifted = FALSE;
     }
@@ -573,7 +664,7 @@ ReadPoints(PDEVICE_CONTEXT Ctx)
     }
     Ctx->Events += left + 1;
     (VOID)ZtCmd(Ctx, ZT_CMD_CLEAR_INT);
-    SendReport(Ctx);
+    SendReports(Ctx);
     return TRUE;
 }
 
@@ -597,6 +688,11 @@ WriteCounters(PDEVICE_CONTEXT Ctx)
     for (i = 0; i < 10; i++) {
         SetValue(Ctx, names[i], (ULONG)Ctx->Ioctl[i]);
     }
+    SetValue(Ctx, L"ModeInUse", Ctx->Mode);
+    SetValue(Ctx, L"FeatureStatus", (ULONG)Ctx->FeatureStatus);
+    SetValue(Ctx, L"FeatureInLen", (ULONG)Ctx->FeatureInLen);
+    SetValue(Ctx, L"FeatureOutLen", (ULONG)Ctx->FeatureOutLen);
+    SetValue(Ctx, L"FeatureId", (ULONG)Ctx->FeatureId);
 }
 
 VOID
@@ -696,6 +792,20 @@ EvtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
     ctx->Gpm21 = ctx->Cmgp + BANK_GPM21;
     ctx->ResX = 1080;
     ctx->ResY = 2400;
+    ctx->Mode = MODE_MOUSE;
+    {
+        WDFKEY key;
+        UNICODE_STRING name;
+        ULONG mode;
+
+        if (NT_SUCCESS(WdfDeviceOpenRegistryKey(Device, PLUGPLAY_REGKEY_DEVICE, KEY_READ, WDF_NO_OBJECT_ATTRIBUTES, &key))) {
+            RtlInitUnicodeString(&name, L"Mode");
+            if (NT_SUCCESS(WdfRegistryQueryULong(key, &name, &mode)) && mode >= MODE_MOUSE && mode <= MODE_BOTH) {
+                ctx->Mode = mode;
+            }
+            WdfRegistryClose(key);
+        }
+    }
     SetValue(ctx, L"State", 0);              /* hardware mapped, not started */
     return STATUS_SUCCESS;
 }
@@ -796,9 +906,6 @@ EvtInternalIoctl(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen, size_t InLen
     PDEVICE_CONTEXT ctx = GetContext(WdfIoQueueGetDevice(Queue));
     NTSTATUS status = STATUS_NOT_SUPPORTED;
 
-    UNREFERENCED_PARAMETER(OutLen);
-    UNREFERENCED_PARAMETER(InLen);
-
     InterlockedIncrement(&ctx->Ioctl[IoctlIndex(Code)]);
     switch (Code) {
     case IOCTL_HID_GET_DEVICE_DESCRIPTOR:
@@ -832,7 +939,7 @@ EvtInternalIoctl(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen, size_t InLen
     case IOCTL_HID_GET_FEATURE: {
         WDFMEMORY inMem;
         size_t inSize = 0;
-        UCHAR id = 0;
+        UCHAR id = REPORTID_MAXCOUNT;   /* our only feature report, if the id can't be read */
         MAXCOUNT_REPORT rep;
 
         /* mshidkmdf: input buffer = the report id, output buffer = the report */
@@ -842,13 +949,17 @@ EvtInternalIoctl(WDFQUEUE Queue, WDFREQUEST Request, size_t OutLen, size_t InLen
                 id = p[0];
             }
         }
+        ctx->FeatureInLen = (LONG)InLen;
+        ctx->FeatureOutLen = (LONG)OutLen;
+        ctx->FeatureId = id;
         if (id != REPORTID_MAXCOUNT) {
             status = STATUS_INVALID_PARAMETER;
-            break;
+        } else {
+            rep.ReportId = REPORTID_MAXCOUNT;
+            rep.MaxCount = ZT_MAX_FINGERS;
+            status = CopyOut(Request, &rep, sizeof(rep));
         }
-        rep.ReportId = REPORTID_MAXCOUNT;
-        rep.MaxCount = ZT_MAX_FINGERS;
-        status = CopyOut(Request, &rep, sizeof(rep));
+        ctx->FeatureStatus = status;
         break;
     }
 

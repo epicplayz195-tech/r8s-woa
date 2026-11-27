@@ -10,7 +10,7 @@ The S20 FE's panel controller is a **Zinitix ZT7650** at I2C address `0x20`.
 | Power | `tsp_ldo_en` (3.0 V), enabled by `gpm21-0` (CMGP pinctrl `0x15C30000` + `0x2A0`) |
 | Attention | `gpa1-0` (ALIVE pinctrl `0x15850000` + `0x20`), low while events are queued; polled |
 | Protocol | 16-bit LE registers; vendor power-on (`0x10F0` enable, `0x17F0` chip code `0xE650`, `0x14F0`, `0x12F0`, `0x11F0` program start), then `0x0000` reset, touch mode `0`; 16-byte event records at `0x0200`/`0x0201` |
-| Windows | KMDF lower filter under inbox `mshidkmdf.sys`: a HID touch screen, 10 contacts |
+| Windows | KMDF lower filter under inbox `mshidkmdf.sys`. `Device Parameters\Mode`: 1 = absolute mouse (default; one finger moves the pointer, touching = left click), 2 = 10-finger HID touch screen, 3 = both |
 
 ACPI: `\_SB.TSC0`, `_HID` `RWOA0003`, `_CRS` = the three pinctrl blocks.
 
