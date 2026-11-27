@@ -27,7 +27,7 @@ jobs:
       - name: Build the drivers (Release|ARM64)
         shell: pwsh
         run: |
-          foreach ($p in "r8slog", "r8stouch") {
+          foreach ($p in "r8slog", "r8stouch", "r8sufs") {
             & $env:MSBUILD drivers\$p\$p.vcxproj /p:Configuration=Release /p:Platform=ARM64 /v:m /nologo
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }

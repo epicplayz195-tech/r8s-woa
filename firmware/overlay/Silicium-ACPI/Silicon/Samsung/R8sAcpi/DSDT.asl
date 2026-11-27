@@ -127,5 +127,24 @@ DefinitionBlock ("DSDT.aml", "DSDT", 2, "SAMSUN", "S5E9830 ", 4)
                 Memory32Fixed (ReadWrite, 0x15C30000, 0x00001000)
             })
         }
+
+        //
+        // r8s-woa: UFS host controller (Samsung UFSHCI @ 0x13100000; DT ufs@0x13100000:
+        // HCI +0x000, vendor +0x1100, GIC SPI 321 = GSIV 353; dma-coherent). Driven by
+        // r8sufs.sys, polled, on the link UEFI's UfsDxe brought up.
+        //
+        Device (UFS0)
+        {
+            Name (_HID, "RWOA0004")
+            Name (_UID, 0)
+            Name (_CCA, 1)
+
+            Method (_STA, 0, NotSerialized) { Return (0x0F) }
+
+            Name (_CRS, ResourceTemplate ()
+            {
+                Memory32Fixed (ReadWrite, 0x13100000, 0x00002000)
+            })
+        }
     }
 }

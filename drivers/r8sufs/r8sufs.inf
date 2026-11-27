@@ -1,0 +1,60 @@
+;
+; r8sufs.inf - Galaxy S20 FE (r8s, Exynos 990) UFS storage (ACPI\RWOA0004), Storport miniport.
+; Exposes UFS LUN 0; writes only inside the GPT partitions "esp" and "win".
+;
+; SPDX-License-Identifier: BSD-2-Clause-Patent
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = SCSIAdapter
+ClassGuid   = {4D36E97B-E325-11CE-BFC1-08002BE10318}
+Provider    = %ProviderName%
+CatalogFile = r8sufs.cat
+DriverVer   = 11/27/2026,1.0.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+r8sufs.sys = 1,,
+
+[Manufacturer]
+%ProviderName% = Standard,NTarm64.10.0...16299
+
+[Standard.NTarm64.10.0...16299]
+%DeviceDesc% = R8sUfs_Install, ACPI\RWOA0004
+
+[ControlFlags]
+ExcludeFromSelect = *
+
+[R8sUfs_Install.NT]
+CopyFiles = R8sUfs_CopyFiles
+
+[R8sUfs_CopyFiles]
+r8sufs.sys
+
+[R8sUfs_Install.NT.Services]
+AddService = r8sufs, 0x00000002, R8sUfs_Service
+
+[R8sUfs_Service]
+DisplayName    = %ServiceDesc%
+ServiceType    = 1              ; SERVICE_KERNEL_DRIVER
+StartType      = 0              ; SERVICE_BOOT_START: Windows itself lives on this disk
+ErrorControl   = 1              ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\r8sufs.sys
+LoadOrderGroup = SCSI miniport
+AddReg         = R8sUfs_Parameters
+
+[R8sUfs_Parameters]
+HKR,"Parameters","BusType",0x00010001,1
+
+[Strings]
+ProviderName = "r8s-woa"
+DiskName     = "r8s-woa UFS driver disk"
+DeviceDesc   = "Galaxy S20 FE UFS storage (Exynos 990)"
+ServiceDesc  = "r8s-woa UFS storage (Storport)"
