@@ -157,6 +157,22 @@ static ULONGLONG Be64(const UCHAR *P) { return ((ULONGLONG)Be32(P) << 32) | Be32
 static ULONGLONG Le64(const UCHAR *P) { ULONGLONG v = 0; int i; for (i = 7; i >= 0; i--) { v = (v << 8) | P[i]; } return v; }
 static ULONG Le32(const UCHAR *P) { return (ULONG)P[0] | ((ULONG)P[1] << 8) | ((ULONG)P[2] << 16) | ((ULONG)P[3] << 24); }
 
+/* Start-up notes for the log: HKLM\SYSTEM\CurrentControlSet\Services\r8sufs\Parameters\Device.
+ * Only at PASSIVE_LEVEL (HwFindAdapter). */
+static VOID
+Note(PADAPTER A, PCSTR Name, ULONG Value)
+{
+    ULONG len = sizeof(ULONG);
+    PUCHAR buf = StorPortAllocateRegistryBuffer(A, &len);
+
+    if (buf == NULL) {
+        return;
+    }
+    RtlCopyMemory(buf, &Value, sizeof(ULONG));
+    (VOID)StorPortRegistryWrite(A, (PUCHAR)Name, TRUE, REG_DWORD, buf, sizeof(ULONG));
+    StorPortFreeRegistryBuffer(A, buf);
+}
+
 /* ---------------------------------------------------------------- takeover */
 
 static BOOLEAN
@@ -548,7 +564,9 @@ HwResetBus(PVOID DeviceExtension, ULONG PathId)
 BOOLEAN
 HwInitialize(PVOID DeviceExtension)
 {
-    return TakeOver((PADAPTER)DeviceExtension);
+    PADAPTER a = (PADAPTER)DeviceExtension;
+
+    return a->Ready ? TRUE : TakeOver(a);
 }
 
 SCSI_ADAPTER_CONTROL_STATUS
@@ -586,18 +604,38 @@ HwFindAdapter(PVOID DeviceExtension, PVOID HwContext, PVOID BusInformation, PCHA
     UNREFERENCED_PARAMETER(ArgumentString);
     *Again = FALSE;
 
-    if (ConfigInfo->NumberOfAccessRanges < 1 || ConfigInfo->AccessRanges == NULL) {
-        return SP_RETURN_NOT_FOUND;
+    Note(a, "Step", 1);
+    Note(a, "InterfaceType", (ULONG)ConfigInfo->AdapterInterfaceType);
+    Note(a, "AccessRanges", ConfigInfo->NumberOfAccessRanges);
+    r = (ConfigInfo->NumberOfAccessRanges >= 1 && ConfigInfo->AccessRanges != NULL) ? &(*ConfigInfo->AccessRanges)[0] : NULL;
+    if (r != NULL) {
+        Note(a, "RangeStart", r->RangeStart.LowPart);
+        Note(a, "RangeLength", r->RangeLength);
+        Note(a, "RangeInMemory", r->RangeInMemory);
     }
-    r = &(*ConfigInfo->AccessRanges)[0];
-    if (r->RangeLength < HCI_SIZE) {
-        return SP_RETURN_BAD_CONFIG;
+    if (r != NULL && r->RangeStart.QuadPart != 0 && r->RangeLength >= HCI_SIZE) {
+        a->Hci = (PUCHAR)StorPortGetDeviceBase(a, ConfigInfo->AdapterInterfaceType, ConfigInfo->SystemIoBusNumber,
+                                               r->RangeStart, HCI_SIZE, FALSE);
     }
-    a->Hci = (PUCHAR)StorPortGetDeviceBase(a, ConfigInfo->AdapterInterfaceType, ConfigInfo->SystemIoBusNumber,
-                                           r->RangeStart, HCI_SIZE, FALSE);
     if (a->Hci == NULL) {
+        STOR_PHYSICAL_ADDRESS hci;              /* no usable range from PnP: the known address */
+
+        hci.QuadPart = 0x13100000;
+        a->Hci = (PUCHAR)StorPortGetDeviceBase(a, ConfigInfo->AdapterInterfaceType, ConfigInfo->SystemIoBusNumber,
+                                               hci, HCI_SIZE, FALSE);
+        Note(a, "UsedFallbackAddress", 1);
+    }
+    if (a->Hci == NULL) {
+        Note(a, "Step", 2);                     /* could not map the controller */
         return SP_RETURN_ERROR;
     }
+    Note(a, "Step", 3);
+    Note(a, "CAP", Rd(a, REG_CAP));
+    Note(a, "HCE", Rd(a, REG_HCE));
+    Note(a, "HCS", Rd(a, REG_HCS));
+    Note(a, "UTRLDBR", Rd(a, REG_UTRLDBR));
+    Note(a, "UTRLRSR", Rd(a, REG_UTRLRSR));
+    Note(a, "IS", Rd(a, REG_IS));
 
     ConfigInfo->MaximumTransferLength = MAX_TRANSFER;
     ConfigInfo->NumberOfPhysicalBreaks = MAX_PRD;
@@ -617,12 +655,17 @@ HwFindAdapter(PVOID DeviceExtension, PVOID HwContext, PVOID BusInformation, PCHA
 
     a->Uncached = (PUCHAR)StorPortGetUncachedExtension(a, ConfigInfo, UNCACHED_SIZE);
     if (a->Uncached == NULL) {
+        Note(a, "Step", 4);                     /* no uncached extension */
         return SP_RETURN_ERROR;
     }
     pa = StorPortGetPhysicalAddress(a, NULL, a->Uncached, &len);
     a->UncachedPhys = (ULONGLONG)pa.QuadPart;
+    Note(a, "UncachedPhysLow", (ULONG)a->UncachedPhys);
+    Note(a, "UncachedPhysHigh", (ULONG)(a->UncachedPhys >> 32));
+    Note(a, "UncachedLen", len);
     if (len < UNCACHED_SIZE || (a->UncachedPhys & 0xFFF) != 0) {
         /* not one contiguous, page-aligned block: the offsets below would not hold */
+        Note(a, "Step", 5);
         return SP_RETURN_ERROR;
     }
     RtlZeroMemory(a->Uncached, UNCACHED_SIZE);
@@ -633,6 +676,12 @@ HwFindAdapter(PVOID DeviceExtension, PVOID HwContext, PVOID BusInformation, PCHA
     a->Ucd = (UCD *)(a->Uncached + OFF_UCD);
     a->Bounce = a->Uncached + OFF_BOUNCE;
     a->BlockSize = 4096;
+
+    /* Take the controller over here, at PASSIVE_LEVEL, so the outcome can be noted. */
+    Note(a, "TakeOver", TakeOver(a) ? 1 : 0);
+    Note(a, "UTRLBAAfter", Rd(a, REG_UTRLBA));
+    Note(a, "UTRLRSRAfter", Rd(a, REG_UTRLRSR));
+    Note(a, "Step", 6);                         /* found */
     return SP_RETURN_FOUND;
 }
 
