@@ -5,6 +5,10 @@
   -> desktop.  No call tracer: that one is tuned to the 22621 bootmgr and
   would misbehave with this build-19041 one.  Phone must be in TWRP.
 
+  -NewBootMgr: keep the desktop boot.wim but start it with the Windows 11
+  23H2 Boot Manager, BCD and boot.sdi from D:\woa\WinPE (the ones that boot
+  on this phone). Also lets -Trace work, since the tracer knows that build.
+
   -Direct: no Shell and no self-test at all. Picking internal storage in the
   Silicium menu starts Windows Boot Manager straight away (the normal way to
   boot it, but if it fails there are no logs; drop -Direct to debug).
@@ -20,6 +24,8 @@ param(
     [switch]$BcdOnly,   # just re-push efi\microsoft\boot\bcd (fast; after a bcdedit tweak)
     [switch]$Trace,     # fast: restore the call tracer + a tracing startup.nsh (no 600 MB re-push)
     [switch]$Direct,    # no UEFI Shell / self-test: internal storage boots Windows Boot Manager straight away
+    [switch]$NewBootMgr, # boot the desktop boot.wim with the 23H2 Boot Manager + BCD + boot.sdi from $BootFrom
+    [string]$BootFrom = "D:\woa\WinPE",
     [string]$TraceEfi = "D:\woa\Mu-r8s-RELEASE\R8sTrace.efi"
 )
 . "$PSScriptRoot\Common.ps1"
@@ -97,7 +103,15 @@ try {
     Invoke-PhoneShell "mv /tmp/esp/EFI/Boot/bootaa64.efi /tmp/shell.efi" | Out-Null
 
     Write-Host "==> Copying the desktop PE (~600 MB, several minutes)"
-    foreach ($item in Get-ChildItem $Source) {
+    $items = @(Get-ChildItem $Source)
+    if ($NewBootMgr) {
+        # Same layout in both (\sources\boot.wim, \boot\boot.sdi), so take everything
+        # except sources\ from the 23H2 WinPE that is known to boot on this phone.
+        if (-not (Test-Path "$BootFrom\efi\boot\bootaa64.efi")) { throw "$BootFrom has no efi\boot\bootaa64.efi." }
+        Write-Host "    (Boot Manager, BCD and boot.sdi from $BootFrom)"
+        $items = @(Get-ChildItem $BootFrom | Where-Object Name -ne "sources") + @(Get-Item "$Source\sources")
+    }
+    foreach ($item in $items) {
         Write-Host "   $($item.Name)"
         Invoke-Adb push $item.FullName /tmp/esp/ | Out-Null
     }
