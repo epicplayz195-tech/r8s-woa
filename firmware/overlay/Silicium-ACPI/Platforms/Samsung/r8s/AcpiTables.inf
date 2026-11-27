@@ -9,7 +9,7 @@
   VERSION_STRING                 = 1.0
 
 [Sources]
-  S5E9830/FADT.aslc
+  R8sAcpi/FADT.aslc            # r8s-woa: PSCI via SMC (upstream says HVC)
   S5E9830/GTDT.aslc
   S5E9830/MADT.aslc
 
