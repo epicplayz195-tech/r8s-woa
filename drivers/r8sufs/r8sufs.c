@@ -662,5 +662,24 @@ DriverEntry(PVOID DriverObject, PVOID RegistryPath)
     init.AutoRequestSense = TRUE;
     init.MultipleRequestPerLu = FALSE;
     init.NeedPhysicalAddresses = TRUE;
-    return StorPortInitialize(DriverObject, RegistryPath, &init, NULL);
+
+    /*
+     * Register for every bus an ACPI device can come in on. Storport matches the PDO's legacy
+     * bus type against these; older Storport (WinPE 19041) does not match InterfaceTypeUndefined
+     * to an ACPI device and fails AddDevice with STATUS_NO_SUCH_DEVICE (code 31). The lowest
+     * status wins, as for any multi-bus miniport.
+     */
+    {
+        static const INTERFACE_TYPE types[] = { Internal, ACPIBus, PNPBus, InterfaceTypeUndefined };
+        ULONG i, status, best = (ULONG)-1;
+
+        for (i = 0; i < RTL_NUMBER_OF(types); i++) {
+            init.AdapterInterfaceType = types[i];
+            status = StorPortInitialize(DriverObject, RegistryPath, &init, NULL);
+            if (status < best) {
+                best = status;
+            }
+        }
+        return best;
+    }
 }
