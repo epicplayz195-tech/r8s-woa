@@ -109,8 +109,8 @@ ping -n 31 127.0.0.1 > nul
 goto loop
 '@
         [IO.File]::WriteAllText((Join-Path $mount "r8s\install-drivers.cmd"), ($cmd -replace "`r?`n", "`r`n"), [Text.Encoding]::ASCII)
-        $dp = "list disk`r`nselect disk 0`r`ndetail disk`r`nlist partition`r`nlist volume`r`n"
-        [IO.File]::WriteAllText((Join-Path $mount "r8s\ufs-list.txt"), $dp, [Text.Encoding]::ASCII)
+        $ufsList = "list disk`r`nselect disk 0`r`ndetail disk`r`nlist partition`r`nlist volume`r`n"
+        [IO.File]::WriteAllText((Join-Path $mount "r8s\ufs-list.txt"), $ufsList, [Text.Encoding]::ASCII)
 
         # Run it when the desktop (explorer) starts: HKLM\...\Run in the image's SOFTWARE hive.
         $hive = Join-Path $mount "Windows\System32\config\SOFTWARE"
