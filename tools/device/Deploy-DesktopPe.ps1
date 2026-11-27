@@ -5,6 +5,10 @@
   -> desktop.  No call tracer: that one is tuned to the 22621 bootmgr and
   would misbehave with this build-19041 one.  Phone must be in TWRP.
 
+  -Direct: no Shell and no self-test at all. Picking internal storage in the
+  Silicium menu starts Windows Boot Manager straight away (the normal way to
+  boot it, but if it fails there are no logs; drop -Direct to debug).
+
   No drivers are injected into this PE (DISM /Add-Driver fails with error 216
   on this older image from an x64 host).  Load drivers at runtime instead,
   from the SD card:  pnputil /add-driver X:\r8slog.inf /install
@@ -15,6 +19,7 @@ param(
     [string]$Scratch  = "D:\woa\scratch",
     [switch]$BcdOnly,   # just re-push efi\microsoft\boot\bcd (fast; after a bcdedit tweak)
     [switch]$Trace,     # fast: restore the call tracer + a tracing startup.nsh (no 600 MB re-push)
+    [switch]$Direct,    # no UEFI Shell / self-test: internal storage boots Windows Boot Manager straight away
     [string]$TraceEfi = "D:\woa\Mu-r8s-RELEASE\R8sTrace.efi"
 )
 . "$PSScriptRoot\Common.ps1"
@@ -95,6 +100,16 @@ try {
     foreach ($item in Get-ChildItem $Source) {
         Write-Host "   $($item.Name)"
         Invoke-Adb push $item.FullName /tmp/esp/ | Out-Null
+    }
+
+    if ($Direct) {
+        Write-Host "==> Direct boot: Boot Manager stays \efi\boot\bootaa64.efi; Shell, self-test and test files removed"
+        Invoke-PhoneShell "rm -f /tmp/shell.efi /tmp/esp/startup.nsh /tmp/esp/r8s-woa-esp.txt /tmp/esp/r8s-diag.txt /tmp/esp/r8s-trace.txt /tmp/esp/r8s-winlog.txt /tmp/esp/r8s-winlog-new /tmp/esp/r8s-noacpi; rm -rf /tmp/esp/EFI/r8s; true" | Out-Null
+        $ls = Invoke-PhoneShell "ls -l /tmp/esp/ /tmp/esp/efi/boot/ /tmp/esp/sources/ 2>&1; true"
+        Write-Host $ls
+        Write-Host "`nDone. Reboot -> System, choose internal storage: Windows Boot Manager starts directly."
+        Write-Host "The desktop loads from a ~600 MB image, so expect a black screen for up to a minute."
+        return    # the finally block below unmounts the ESP
     }
 
     Write-Host "==> Shell first, Boot Manager as winpe.efi; tracer removed"
