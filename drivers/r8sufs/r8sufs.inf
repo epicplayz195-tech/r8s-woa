@@ -52,6 +52,11 @@ AddReg         = R8sUfs_Parameters
 
 [R8sUfs_Parameters]
 HKR,"Parameters","BusType",0x00010001,1
+; Bus types Storport may attach this miniport on (INTERFACE_TYPE numbers). Older Storport
+; (WinPE 19041) refuses AddDevice with STATUS_NO_SUCH_DEVICE (code 31) without these.
+HKR,"Parameters\PnpInterface","0",0x00010001,1     ; Internal
+HKR,"Parameters\PnpInterface","15",0x00010001,1    ; PNPBus
+HKR,"Parameters\PnpInterface","17",0x00010001,1    ; ACPIBus
 
 [Strings]
 ProviderName = "r8s-woa"
