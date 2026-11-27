@@ -36,6 +36,7 @@
 #define MAX77705_CHG_CNFG_02   0xB9     // [7:6] OTG_ILIM: 1 = 900 mA
 #define MAX77705_CHG_CNFG_06   0xBD     // [3:2] CHGPROT: 3 = settings unlocked
 #define MAX77705_MODE_OTG      0x0A
+#define MAX77705_CHG_DETAILS_00 0xB3    // [6:5] CHGIN_DTLS: 3 = VBUS valid (a charger or PC is plugged in)
 
 // MAX77705 USB-C controller (CCIC) page at 0x25: a mailbox runs commands in
 // its firmware. Write [opcode, data] from 0x21, write 0x41 to start, wait for
@@ -73,6 +74,18 @@ UsbHostEnableVbus (
 
   Status = I2c->InitBus (MAX77705_I2C_BUS);
   if (EFI_ERROR (Status) && (Status != EFI_ALREADY_STARTED)) {
+    return;
+  }
+
+  //
+  // Something is already feeding 5 V in (PC or charger): never turn on our own
+  // boost against it. Doing that reset or froze the phone right at
+  // ExitBootServices whenever it was booted with the PC cable plugged in.
+  //
+  if (EFI_ERROR (I2c->Read (MAX77705_I2C_BUS, MAX77705_CHG_ADDR, MAX77705_CHG_DETAILS_00, &Val))) {
+    return;
+  }
+  if (((Val >> 5) & 3) == 3) {
     return;
   }
 
