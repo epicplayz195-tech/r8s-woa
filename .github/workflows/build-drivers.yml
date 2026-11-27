@@ -24,11 +24,13 @@ jobs:
           Write-Host "ARM64 compilers:"; Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | ForEach-Object { "  $($_.FullName)" }
           "MSBUILD=$vs\MSBuild\Current\Bin\amd64\MSBuild.exe" | Out-File -Append $env:GITHUB_ENV
 
-      - name: Build r8slog (Release|ARM64)
+      - name: Build the drivers (Release|ARM64)
         shell: pwsh
         run: |
-          & $env:MSBUILD drivers\r8slog\r8slog.vcxproj /p:Configuration=Release /p:Platform=ARM64 /v:m /nologo
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($p in "r8slog", "r8stouch") {
+            & $env:MSBUILD drivers\$p\$p.vcxproj /p:Configuration=Release /p:Platform=ARM64 /v:m /nologo
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           # The WDK also drops a package copy of the INF (without the .sys) in a
           # subfolder; DISM /Recurse would trip over it.
           Get-ChildItem out\drivers -Directory | ForEach-Object {
@@ -44,6 +46,16 @@ jobs:
           Get-ChildItem -Recurse out -Filter *.sys | ForEach-Object {
             & $signtool sign /v /fd sha256 /sha1 $cert.Thumbprint $_.FullName
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          # Catalogs, so pnputil can install the packages into a running Windows (testsigning on).
+          $inf2cat = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x86\inf2cat.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          Get-ChildItem out\drivers -Directory | ForEach-Object {
+            & $inf2cat /driver:$($_.FullName) /os:10_RS3_ARM64 /uselocaltime
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Get-ChildItem $_.FullName -Filter *.cat | ForEach-Object {
+              & $signtool sign /v /fd sha256 /sha1 $cert.Thumbprint $_.FullName
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
           }
           Export-Certificate -Cert $cert -FilePath out\drivers\r8s-woa-test.cer | Out-Null
           Get-ChildItem -Recurse out -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName).Hash.ToLower(), $_.FullName.Substring((Resolve-Path out).Path.Length + 1) } | Tee-Object out\drivers\SHA256SUMS

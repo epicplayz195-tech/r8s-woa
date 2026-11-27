@@ -1,0 +1,74 @@
+;
+; r8stouch.inf - Galaxy S20 FE (r8s) Zinitix ZT7650 touchscreen (ACPI\RWOA0003)
+;
+; r8stouch.sys talks to the controller (bit-banged I2C on the pinctrl GPIOs)
+; and is a lower filter under the inbox mshidkmdf.sys, which turns it into a
+; HID touch screen.
+;
+; SPDX-License-Identifier: BSD-2-Clause-Patent
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = HIDClass
+ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Provider    = %ProviderName%
+CatalogFile = r8stouch.cat
+DriverVer   = 11/27/2026,1.0.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+r8stouch.sys = 1,,
+
+[Manufacturer]
+%ProviderName% = Standard,NTarm64.10.0...16299
+
+[Standard.NTarm64.10.0...16299]
+%DeviceDesc% = R8sTouch_Install, ACPI\RWOA0003
+
+[R8sTouch_Install.NT]
+CopyFiles = R8sTouch_CopyFiles
+
+[R8sTouch_CopyFiles]
+r8stouch.sys
+
+[R8sTouch_Install.NT.HW]
+AddReg = R8sTouch_HW_AddReg
+
+[R8sTouch_HW_AddReg]
+HKR,,"LowerFilters",0x00010000,"r8stouch"
+
+[R8sTouch_Install.NT.Services]
+AddService = r8stouch, 0x00000000, R8sTouch_Service
+AddService = mshidkmdf, 0x00000002, MsHidKmdf_Service   ; SPSVCINST_ASSOCSERVICE: the function driver
+
+[R8sTouch_Service]
+DisplayName   = %ServiceDesc%
+ServiceType   = 1               ; SERVICE_KERNEL_DRIVER
+StartType     = 3               ; SERVICE_DEMAND_START
+ErrorControl  = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\r8stouch.sys
+
+[MsHidKmdf_Service]
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %12%\mshidkmdf.sys
+
+[R8sTouch_Install.NT.Wdf]
+KmdfService = r8stouch, R8sTouch_WdfSection
+
+[R8sTouch_WdfSection]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+ProviderName = "r8s-woa"
+DiskName     = "r8s-woa touch driver disk"
+DeviceDesc   = "Galaxy S20 FE touch screen (Zinitix ZT7650)"
+ServiceDesc  = "r8s-woa touch screen (ZT7650)"

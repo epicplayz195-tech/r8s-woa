@@ -107,5 +107,25 @@ DefinitionBlock ("DSDT.aml", "DSDT", 2, "SAMSUN", "S5E9830 ", 4)
                 Memory32Fixed (ReadWrite, 0xFDB10000, 0x00400000)
             })
         }
+
+        //
+        // r8s-woa: touch screen, Zinitix ZT7650 at I2C 0x20 on gpp5-6/7 (the HSI2C_15
+        // pins), bit-banged by r8stouch.sys. Power: gpm21-0 (tsp_ldo_en). Attention:
+        // gpa1-0, polled. The pinctrl blocks it uses, in this order: PERIC1, ALIVE, CMGP.
+        //
+        Device (TSC0)
+        {
+            Name (_HID, "RWOA0003")
+            Name (_UID, 0)
+
+            Method (_STA, 0, NotSerialized) { Return (0x0F) }
+
+            Name (_CRS, ResourceTemplate ()
+            {
+                Memory32Fixed (ReadWrite, 0x10730000, 0x00001000)
+                Memory32Fixed (ReadWrite, 0x15850000, 0x00001000)
+                Memory32Fixed (ReadWrite, 0x15C30000, 0x00001000)
+            })
+        }
     }
 }
