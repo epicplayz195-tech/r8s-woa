@@ -250,7 +250,7 @@ Exec(PADAPTER A, const UCHAR *Cdb, ULONG CdbLen, ULONG Dir, ULONG Length, PUCHAR
     }
 
     RtlZeroMemory(t, sizeof(*t));
-    t->Dw0 = Dir | UTRD_INT;                /* command type 0 = SCSI, as UfsDxe */
+    t->Dw0 = Dir;                           /* command type 0 = SCSI; no IOC: polled, the line stays quiet */
     t->Dw2 = OCS_INVALID;
     t->UcdLow = (ULONG)A->UcdPhys;
     t->UcdHigh = (ULONG)(A->UcdPhys >> 32);

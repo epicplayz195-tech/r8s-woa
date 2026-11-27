@@ -144,6 +144,14 @@ DefinitionBlock ("DSDT.aml", "DSDT", 2, "SAMSUN", "S5E9830 ", 4)
             Name (_CRS, ResourceTemplate ()
             {
                 Memory32Fixed (ReadWrite, 0x13100000, 0x00002000)
+                //
+                // Storport will not start an adapter without an interrupt resource,
+                // even a polled one (code 10, 0xC0000225), and connects it as
+                // level-sensitive only (Galaxy S9+ project, Exynos9810 DSDT). This is
+                // the UFS line itself (DT: <0 141 4>, level high); it never asserts:
+                // r8sufs keeps UFS IE = 0 and clears the request IOC bit.
+                //
+                Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { 353 }
             })
         }
     }
