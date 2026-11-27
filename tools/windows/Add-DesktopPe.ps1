@@ -9,7 +9,8 @@
   replaces the shell), this leaves the PE's own startup alone so you still
   get its desktop + Device Manager. It only:
     1. mounts boot.wim on an NTFS VHD (D: is exFAT, DISM can't mount there),
-    2. adds every driver under $Drivers (r8slog, and USB/UFS later),
+    2. copies every driver under $Drivers (r8slog, r8stouch, ...) to X:\r8s\drivers
+       and runs X:\r8s\install-drivers.cmd (pnputil) when the desktop starts,
     3. prints winpeshl.ini / startnet.cmd so we can see how it launches the
        desktop (to add background logging next round),
     4. commits and marks the image bootable.
@@ -64,9 +65,42 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "DISM mount failed ($LASTEXITCODE)." }
 
     if (Test-Path $Drivers) {
-        Write-Host "==> Adding drivers from $Drivers"
-        dism /Image:$mount /Add-Driver /Driver:$Drivers /Recurse /ForceUnsigned /ScratchDir:$wscr
-        if ($LASTEXITCODE -ne 0) { throw "DISM Add-Driver failed ($LASTEXITCODE)." }
+        # DISM /Add-Driver fails on this older image from an x64 host (error 216), so the
+        # packages are copied in and installed by pnputil when the desktop starts.
+        Write-Host "==> Copying drivers from $Drivers to X:\r8s\drivers"
+        $dst = Join-Path $mount "r8s\drivers"
+        if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $dst | Out-Null
+        Copy-Item (Join-Path $Drivers "*") $dst -Recurse -Force
+        Get-ChildItem $dst -Recurse -File | ForEach-Object { "    " + $_.FullName.Substring($dst.Length + 1) }
+
+        $cmd = @'
+@echo off
+rem r8s-woa: trust the test certificate, then install every driver package in X:\r8s\drivers.
+set LOG=X:\r8s\install-log.txt
+echo r8s-woa driver install %DATE% %TIME% > %LOG%
+for /r X:\r8s\drivers %%c in (*.cer) do (
+  certutil -f -addstore Root "%%c" >> %LOG% 2>&1
+  certutil -f -addstore TrustedPublisher "%%c" >> %LOG% 2>&1
+)
+for /r X:\r8s\drivers %%i in (*.inf) do pnputil /add-driver "%%i" /install >> %LOG% 2>&1
+echo. >> %LOG%
+echo Touch driver state (State 1 = running; see docs\touch.md): >> %LOG%
+reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\RWOA0003" /s >> %LOG% 2>&1
+if not "%1"=="/auto" type %LOG%
+'@
+        [IO.File]::WriteAllText((Join-Path $mount "r8s\install-drivers.cmd"), ($cmd -replace "`r?`n", "`r`n"), [Text.Encoding]::ASCII)
+
+        # Run it when the desktop (explorer) starts: HKLM\...\Run in the image's SOFTWARE hive.
+        $hive = Join-Path $mount "Windows\System32\config\SOFTWARE"
+        reg load HKLM\R8S_PE_SW $hive | Out-Null
+        try {
+            reg add "HKLM\R8S_PE_SW\Microsoft\Windows\CurrentVersion\Run" /v r8s-drivers /t REG_SZ /d "cmd /c X:\r8s\install-drivers.cmd /auto" /f | Out-Null
+            Write-Host "    install-drivers.cmd runs when the desktop starts (log: X:\r8s\install-log.txt)"
+        } finally {
+            [gc]::Collect(); Start-Sleep -Seconds 1
+            reg unload HKLM\R8S_PE_SW | Out-Null
+        }
     } else {
         Write-Warning "No $Drivers folder: desktop PE gets no r8s drivers."
     }
@@ -94,4 +128,4 @@ finally {
 
 & "$PSScriptRoot\Set-WimBootable.ps1" -Wim $Wim
 Write-Host "`nDone. Deploy it with:"
-Write-Host "  .\Push-EspDebug.ps1 -Source D:\woa\other-pe\winpe_desktop_nodrivers -EspImage D:\woa\Mu-r8s-RELEASE\esp-r8s.img.gz"
+Write-Host "  ..\device\Deploy-DesktopPe.ps1 -NewBootMgr     (phone in TWRP; the 23H2 BCD has testsigning on)"
