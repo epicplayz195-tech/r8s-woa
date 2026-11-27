@@ -123,7 +123,8 @@ if ($Partitions) {
     $unknown = @($Partitions | Where-Object { $inBackup.Name -notcontains $_ })
     if ($unknown) { throw "Not in the backup: $($unknown -join ', ')" }
 } elseif ($All) {
-    $todo = @($inBackup | Where-Object { $NeverByDefault -notcontains $_.Name })
+    # Never whole LUNs (sda..sdh: boot LUNs hold the bootloader) unless named with -Partitions.
+    $todo = @($inBackup | Where-Object { $NeverByDefault -notcontains $_.Name -and $_.Name -notmatch '^sd[a-z]$' })
 } else {
     $todo = @($inBackup | Where-Object { $AndroidSet -contains $_.Name })
 }

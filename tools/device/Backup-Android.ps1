@@ -84,6 +84,21 @@ $still = Dismount-PhoneFilesystems
 if ($still) { Write-Warning "Still mounted: $($still -join ', '). The backup should still be fine since TWRP isn't writing, but if a later restore won't boot, reboot TWRP, don't decrypt, and back up again." }
 
 $parts = @(Get-PhonePartitions | Where-Object Size -gt 0 | Sort-Object Size)
+# TWRP also lists whole UFS LUNs by name (sda, sdd, ...). A LUN that has its own
+# partitions is already covered by them; copying it too would save the whole
+# 128 GB disk a second time. Keep only LUNs without partitions (boot LUNs).
+$skipped = @()
+$parts = @($parts | Where-Object {
+    if ($_.Node -match '^/dev/block/(sd[a-z])$') {
+        $hasParts = (Invoke-PhoneShell "[ -b /dev/block/$($Matches[1])1 ] && echo yes || echo no") -eq "yes"
+        if ($hasParts) { $script:skipped += $_.Name; return $false }
+    }
+    return $true
+})
+foreach ($n in $skipped) {
+    Write-Host "skip $n (whole disk; its partitions are saved one by one)"
+    foreach ($old in "$n.img.gz", "$n.sparse") { if ($dest) { Remove-Item (Join-Path $dest $old) -ErrorAction SilentlyContinue } }
+}
 if (-not ($parts | Where-Object Name -eq "userdata")) {
     if (-not $Force) { throw "No 'userdata' partition. If the phone is still partitioned for Windows (esp/win), Android isn't installed. Use -Force to back up anyway." }
 }
