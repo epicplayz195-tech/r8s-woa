@@ -98,10 +98,12 @@ Invoke-PhoneShell "umount /tmp/esp 2>/dev/null; dd if=/tmp/esp-r8s.img of=/dev/b
 Invoke-PhoneShell "mkdir -p /tmp/esp; mount -t vfat /dev/block/by-name/esp /tmp/esp" | Out-Null
 try {
     Invoke-PhoneShell "mv /tmp/esp/EFI/Boot/bootaa64.efi /tmp/shell.efi" | Out-Null
-    foreach ($item in Get-ChildItem (Join-Path $In "esp")) {
+    foreach ($item in Get-ChildItem (Join-Path $In "esp") | Where-Object Name -ne "System Volume Information") {
         Write-Host "   $($item.Name)"
         Invoke-Adb push $item.FullName /tmp/esp/ | Out-Null
     }
+    # Transaction logs left by the PC's bcdedit: stale next to the final BCD, the Boot Manager may replay them.
+    Invoke-PhoneShell "rm -f /tmp/esp/EFI/Microsoft/Boot/BCD.LOG*; true" | Out-Null
     if ($Direct) {
         Invoke-PhoneShell "rm -f /tmp/shell.efi /tmp/esp/startup.nsh /tmp/esp/r8s-woa-esp.txt; rm -rf /tmp/esp/EFI/r8s; true" | Out-Null
     } else {
