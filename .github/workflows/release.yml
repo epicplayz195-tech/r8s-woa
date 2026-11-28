@@ -1,0 +1,62 @@
+name: Release
+
+# Run by hand (Actions -> Release -> Run workflow): publishes the UEFI and the drivers of two
+# finished build runs as a GitHub release. Notes come from docs/releases/<tag>.md.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (a notes file docs/releases/<tag>.md must exist)"
+        default: "v0.1.0"
+      uefi_run:
+        description: "Run id of a successful 'Build r8s UEFI' run"
+        default: "46115433865"
+      drivers_run:
+        description: "Run id of a successful 'Build Windows drivers (ARM64)' run"
+        default: "46141288082"
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Mu-r8s-RELEASE
+          path: dl/uefi
+          run-id: ${{ inputs.uefi_run }}
+          github-token: ${{ github.token }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: r8s-drivers-arm64
+          path: dl/drivers
+          run-id: ${{ inputs.drivers_run }}
+          github-token: ${{ github.token }}
+
+      - name: Assemble
+        run: |
+          set -e
+          mkdir rel
+          cp dl/uefi/Mu-r8s.img dl/uefi/Mu-r8s-odin.tar.md5 dl/uefi/esp-r8s.img.gz dl/uefi/SHA256SUMS rel/
+          (cd rel && sha256sum -c SHA256SUMS)
+          (cd dl/drivers && zip -qr ../../rel/r8s-drivers-arm64.zip .)
+          test -f "docs/releases/${{ inputs.tag }}.md"
+          ls -l rel
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""; [ "${{ inputs.prerelease }}" = "true" ] && pre="--prerelease"
+          gh release create "${{ inputs.tag }}" rel/* --target "$GITHUB_SHA" $pre \
+            --title "${{ inputs.tag }}: Windows 11 boots" --notes-file "docs/releases/${{ inputs.tag }}.md"
