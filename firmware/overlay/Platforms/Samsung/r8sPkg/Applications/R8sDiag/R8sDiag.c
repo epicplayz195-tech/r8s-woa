@@ -1035,9 +1035,32 @@ R8sDiagMain (
   IN EFI_SYSTEM_TABLE  *SystemTable
   )
 {
+  EFI_FILE_PROTOCOL  *Flag;
+
   LogOpen (ImageHandle);
   LogPrint (L"\n=== r8s-woa firmware self-test ===\n");
   SaveWindowsLog ();
+
+  //
+  // Quick by default: only the Windows log above, so every start stays fast.
+  // An (empty) \r8s-full-selftest on the ESP brings the full tests back.
+  //
+  if ((mRoot == NULL) ||
+      EFI_ERROR (mRoot->Open (mRoot, &Flag, L"\\r8s-full-selftest", EFI_FILE_MODE_READ, 0)))
+  {
+    LogPrint (L"Quick start: Windows log only (\\r8s-full-selftest on the ESP = full self-test).\n");
+    if (mRoot != NULL) {
+      mRoot->Close (mRoot);
+    }
+
+    if (mLog != NULL) {
+      mLog->Close (mLog);
+    }
+
+    return EFI_SUCCESS;
+  }
+
+  Flag->Close (Flag);
   TestMax77705 ();
   TestAcpi ();
   LogPrint (L"Firmware: %s rev 0x%x, UEFI %d.%d\n",
