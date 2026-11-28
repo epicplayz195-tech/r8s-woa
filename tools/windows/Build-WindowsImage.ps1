@@ -461,6 +461,30 @@ try {
     $rc = robocopy "${E}:\" $espOut /E /COPY:D /A-:SHR /R:1 /W:1 /NFL /NDL /NJH /NJS
     if ($LASTEXITCODE -ge 8) { throw "robocopy of the ESP failed ($LASTEXITCODE): $rc" }
     Get-ChildItem $espOut -Recurse -Force | ForEach-Object { $_.Attributes = 'Normal' }
+
+    # The BCD as saved is only complete together with its transaction logs (BCD.LOG*, *.regtrans-ms):
+    # Windows writes registry changes to the logs first. The firmware-side Boot Manager can't be
+    # trusted to replay them, so fold everything into one clean file: load (applies the logs), save
+    # a fresh copy, drop the logs.
+    $ob = Join-Path $espOut "EFI\Microsoft\Boot\BCD"
+    $r = reg load HKLM\R8S_BCDO $ob 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "reg load of the saved BCD failed: $r" }
+    try {
+        $r = reg save HKLM\R8S_BCDO "$ob.clean" /y 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "reg save of the BCD failed: $r" }
+    } finally {
+        [gc]::Collect(); Start-Sleep -Seconds 1
+        $null = reg unload HKLM\R8S_BCDO 2>&1
+    }
+    Get-ChildItem (Split-Path $ob) -Force | Where-Object { $_.Name -match '^BCD(\.LOG\d*|\{.*)$' -or $_.Name -eq 'BCD' } |
+        Remove-Item -Force
+    Move-Item "$ob.clean" $ob
+    $bytes = [IO.File]::ReadAllBytes($ob)
+    $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+    if ($ascii -notmatch 'TreatAsSystem' -or $ascii -notmatch 'winload\.efi|w.i.n.l.o.a.d') {
+        throw "The cleaned BCD is missing the system-store flag or the Windows entry."
+    }
+    Write-Host "    BCD folded into one file ($($bytes.Length) bytes), system store"
 } catch {
     Dismount-Work
     throw
