@@ -157,6 +157,7 @@ typedef struct _ADAPTER {
     ULONG     Errors;
     ULONG     LastResidual;
     ULONG     GptEntriesCrc;
+    ULONG     GptFixes;
     ULONG     LastIs;
 } ADAPTER, *PADAPTER;
 
@@ -595,6 +596,53 @@ SetSense(PSCSI_REQUEST_BLOCK Srb, UCHAR Key, UCHAR Asc, UCHAR Ascq)
     }
 }
 
+/*
+ * Samsung writes its GPT headers with HeaderSize 512. The UEFI spec allows anything from 92 to
+ * the block size, but Windows accepts only 92 (sizeof its header struct): with 512 it rejects
+ * the GPT and sees the protective MBR instead, so no partitions and no volumes. The first 92
+ * bytes are the whole header (the rest is reserved, zero), so reads are answered with
+ * HeaderSize 92 and the CRC recomputed over those 92 bytes. Nothing is written to the device:
+ * the GPT is outside esp/win, so writes there are refused anyway.
+ */
+static VOID
+FixGptHeaders(PADAPTER A, const UCHAR *Cdb, ULONG Len)
+{
+    ULONGLONG lba;
+    ULONG i, blocks;
+
+    if (A->BlockSize == 0 || Len < A->BlockSize) {
+        return;
+    }
+    lba = Cdb[0] == OP_READ16 ? Be64(Cdb + 2) :
+          Cdb[0] == OP_READ10 ? Be32(Cdb + 2) :
+          (((ULONG)Cdb[1] & 0x1F) << 16) | ((ULONG)Cdb[2] << 8) | Cdb[3];
+    blocks = Len / A->BlockSize;
+    for (i = 0; i < blocks; i++) {
+        PUCHAR h = A->Bounce + i * A->BlockSize;
+        ULONG size, crc;
+
+        if (RtlCompareMemory(h, "EFI PART", 8) != 8 || Le64(h + 24) != lba + i) {
+            continue;                       /* not a header, or not the one for this block */
+        }
+        size = Le32(h + 12);
+        if (size == 92 || size < 92 || size > A->BlockSize) {
+            continue;
+        }
+        crc = Le32(h + 16);
+        h[16] = h[17] = h[18] = h[19] = 0;
+        if (Crc32(h, size, 0) != crc) {     /* corrupt as read: leave it for Windows to judge */
+            h[16] = (UCHAR)crc; h[17] = (UCHAR)(crc >> 8); h[18] = (UCHAR)(crc >> 16); h[19] = (UCHAR)(crc >> 24);
+            continue;
+        }
+        h[12] = 92; h[13] = h[14] = h[15] = 0;
+        crc = Crc32(h, 92, 0);
+        h[16] = (UCHAR)crc; h[17] = (UCHAR)(crc >> 8); h[18] = (UCHAR)(crc >> 16); h[19] = (UCHAR)(crc >> 24);
+        if (A->GptFixes++ < 8) {
+            Say(A, "[ufs] GPT header at lba %I64u: HeaderSize %u -> 92 for Windows (crc %08X)\r\n", lba + i, size, crc);
+        }
+    }
+}
+
 static VOID
 DoScsiInner(PADAPTER A, PSCSI_REQUEST_BLOCK Srb)
 {
@@ -686,6 +734,9 @@ DoScsiInner(PADAPTER A, PSCSI_REQUEST_BLOCK Srb)
          * READ CAPACITY(16) len 32 reports 32 left yet returns the data), so it is ignored:
          * the whole buffer is returned, zero-padded. */
         if (dir == UTRD_DD_IN) {
+            if (cdb[0] == OP_READ6 || cdb[0] == OP_READ10 || cdb[0] == OP_READ16) {
+                FixGptHeaders(A, cdb, len);
+            }
             RtlCopyMemory(Srb->DataBuffer, A->Bounce, len);
         }
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
