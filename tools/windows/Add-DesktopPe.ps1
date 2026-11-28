@@ -110,18 +110,30 @@ dir S:\ >> %LOG% 2>&1
 echo [ufs] write test, the esp is one of the two writable partitions >> %LOG%
 echo r8sufs write test %DATE% %TIME% > S:\r8s-ufs-write-test.txt
 type S:\r8s-ufs-write-test.txt >> %LOG% 2>&1
-echo [ufs] disks seen through r8sufs, diskpart, last: it may hang >> %LOG%
-diskpart /s X:\r8s\ufs-list.txt >> %LOG% 2>&1
 echo [ufs] test done >> %LOG%
 :loop
 echo [touch] %TIME% >> %LOG%
 reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\RWOA0003\0\Device Parameters" >> %LOG% 2>&1
+echo [ufs] %TIME% >> %LOG%
+reg query "HKLM\SYSTEM\CurrentControlSet\Services\r8sufs\Parameters\Device" >> %LOG% 2>&1
 ping -n 31 127.0.0.1 > nul
 goto loop
 '@
         [IO.File]::WriteAllText((Join-Path $mount "r8s\install-drivers.cmd"), ($cmd -replace "`r?`n", "`r`n"), [Text.Encoding]::ASCII)
         $ufsList = "list disk`r`nselect disk 0`r`ndetail disk`r`nlist partition`r`nlist volume`r`n"
         [IO.File]::WriteAllText((Join-Path $mount "r8s\ufs-list.txt"), $ufsList, [Text.Encoding]::ASCII)
+
+        # Disks online whatever their bus (WinPE's default SAN policy takes "shared bus" disks offline).
+        reg load HKLM\R8S_PE_SYS (Join-Path $mount "Windows\System32\config\SYSTEM") | Out-Null
+        try {
+            foreach ($cs in "ControlSet001", "ControlSet002") {
+                reg add "HKLM\R8S_PE_SYS\$cs\Services\partmgr\Parameters" /v SanPolicy /t REG_DWORD /d 1 /f 2>$null | Out-Null
+            }
+            Write-Host "    SAN policy: online all"
+        } finally {
+            [gc]::Collect(); Start-Sleep -Seconds 1
+            reg unload HKLM\R8S_PE_SYS | Out-Null
+        }
 
         # Run it when the desktop (explorer) starts: HKLM\...\Run in the image's SOFTWARE hive.
         $hive = Join-Path $mount "Windows\System32\config\SOFTWARE"

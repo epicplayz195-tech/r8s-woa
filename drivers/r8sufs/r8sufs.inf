@@ -51,7 +51,9 @@ LoadOrderGroup = SCSI miniport
 AddReg         = R8sUfs_Parameters
 
 [R8sUfs_Parameters]
-HKR,"Parameters","BusType",0x00010001,1
+; BusTypeUfs (0x13). As SCSI (1) the disk counts as "shared bus" and WinPE's default SAN
+; policy (OfflineShared) leaves it offline: no volumes.
+HKR,"Parameters","BusType",0x00010001,0x13
 ; Bus types Storport may attach this miniport on (INTERFACE_TYPE numbers). Older Storport
 ; (WinPE 19041) refuses AddDevice with STATUS_NO_SUCH_DEVICE (code 31) without these.
 HKR,"Parameters\PnpInterface","0",0x00010001,1     ; Internal

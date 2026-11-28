@@ -168,6 +168,9 @@ typedef struct _ADAPTER {
     LONG      LogTail;              /* records written to the file by LogWork */
     ULONG     Seq;
     ULONG     Errors;
+    volatile LONG QueueFailures, FileFailures, WorkRuns;
+    UCHAR     LastErrOp, LastErrResult, LastErrKey, LastErrAsc;
+    ULONG     LastErrLba;
     LOG_REC   Log[LOG_RING];
 } ADAPTER, *PADAPTER;
 
@@ -422,15 +425,32 @@ LogWork(PVOID DeviceExtension, PVOID Context, PVOID Worker)
     HANDLE h;
     CHAR line[200];
     LONG head;
+    NTSTATUS st;
 
     UNREFERENCED_PARAMETER(Context);
     UNREFERENCED_PARAMETER(Worker);
 
+    /* Running totals in the registry too (Parameters\Device), in case the file can't be written. */
+    InterlockedIncrement(&a->WorkRuns);
+    Note(a, "Commands", a->Seq);
+    Note(a, "Errors", a->Errors);
+    Note(a, "LogQueueFailures", (ULONG)a->QueueFailures);
+    Note(a, "LogFileFailures", (ULONG)a->FileFailures);
+    Note(a, "LogWorkRuns", (ULONG)a->WorkRuns);
+    Note(a, "LastErrorOp", a->LastErrOp);
+    Note(a, "LastErrorResult", a->LastErrResult);
+    Note(a, "LastErrorSense", ((ULONG)a->LastErrKey << 8) | a->LastErrAsc);
+    Note(a, "LastErrorLba", a->LastErrLba);
+
     RtlInitUnicodeString(&path, L"\\SystemRoot\\r8s-log.txt");
     InitializeObjectAttributes(&oa, &path, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
-    if (NT_SUCCESS(ZwCreateFile(&h, FILE_APPEND_DATA | SYNCHRONIZE, &oa, &io, NULL, FILE_ATTRIBUTE_NORMAL,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN_IF,
-                                FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0))) {
+    st = ZwCreateFile(&h, FILE_APPEND_DATA | SYNCHRONIZE, &oa, &io, NULL, FILE_ATTRIBUTE_NORMAL,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN_IF,
+                      FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0);
+    if (!NT_SUCCESS(st)) {
+        InterlockedIncrement(&a->FileFailures);
+        Note(a, "LogFileStatus", (ULONG)st);
+    } else {
         head = a->LogHead;
         if (head - a->LogTail > LOG_RING) {
             a->LogTail = head - LOG_RING;
@@ -494,9 +514,16 @@ Record(PADAPTER A, const UCHAR *Cdb, ULONG Len, UCHAR Result, UCHAR ScsiStatus, 
         r->Asc = Sense[12];
         r->Ascq = Sense[13];
     }
+    if (error) {
+        A->LastErrOp = r->Op; A->LastErrResult = Result; A->LastErrKey = r->SenseKey;
+        A->LastErrAsc = r->Asc; A->LastErrLba = (ULONG)r->Lba;
+    }
     InterlockedIncrement(&A->LogHead);
     if (A->Worker != NULL && InterlockedCompareExchange(&A->WorkPending, 1, 0) == 0) {
-        StorPortQueueWorkItem(A, LogWork, A->Worker, NULL);
+        if (StorPortQueueWorkItem(A, LogWork, A->Worker, NULL) != STOR_STATUS_SUCCESS) {
+            InterlockedIncrement(&A->QueueFailures);
+            InterlockedExchange(&A->WorkPending, 0);
+        }
     }
 }
 
