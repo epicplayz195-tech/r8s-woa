@@ -7,8 +7,11 @@ and its fork [ilyatbn/exynos-woa](https://github.com/ilyatbn/exynos-woa)
 (firmware + drivers + install tooling), but targets a different SoC, so very
 little of their device code carries over directly.
 
-> **Status: experimental, unvalidated.** Nothing here has been run on an r8s
-> yet. Expect to debug. Back up first (`tools/device/Backup-Phone.ps1`).
+> **Status: Windows 11 boots to the desktop from the phone's UFS** (28 Nov 2026, SM-G780F,
+> bootloader bit 24, Windows 11 22H2 ARM64). Storage, touch (as a mouse) and restart work;
+> one CPU core of eight, no USB/Wi-Fi/sound/GPU yet. Experimental: back up first.
+>
+> **Install guide: [docs/install.md](docs/install.md).** Firmware and drivers: **Releases**.
 
 ## Where the port starts
 
@@ -30,9 +33,19 @@ Details and the things to verify on hardware: [docs/porting-notes.md](docs/porti
 
 ## Milestones
 
-1. **UEFI with storage + USB** — boots to the Silicium menu, boots the UEFI Shell from UFS. **Done: confirmed on hardware (bit-24 S20 FE, 9 Nov 2026)**: Shell loaded from the `esp` partition, listed devices and read files.
-2. **WinPE boots** — what x1s reaches today. Needs `uh` erased.
-3. **Full Windows** — needs a Windows UFS driver for Exynos 990 (port of `Exynos9810Ufs`), then HSI2C + touch. See [docs/driver-plan.md](docs/driver-plan.md).
+1. **UEFI with storage** - Silicium boots, the UEFI Shell runs from the `esp` on UFS. Done (9 Nov 2026).
+2. **WinPE** - a desktop WinPE boots, with touch and the UFS driver. Done.
+3. **Full Windows 11** - built on the PC, flashed through TWRP, set up unattended, boots to
+   the desktop from UFS. Done (28 Nov 2026).
+4. Next: the other 7 CPU cores, power-off, USB host, then the rest.
+
+## Drivers (`drivers/`)
+
+| Driver | Device | What |
+|---|---|---|
+| `r8sufs` | `ACPI\RWOA0004`, UFSHCI at 0x13100000 | Storport miniport. Takes over the controller UEFI left running (no link reset), one slot, polled, bounce buffer. Writes only inside the GPT partitions `esp` and `win`. Presents Samsung's GPT to Windows with HeaderSize 92 (Windows rejects Samsung's 512) and the Android partitions hidden. |
+| `r8stouch` | `ACPI\RWOA0003`, Zinitix ZT7650 | KMDF HID minidriver, bit-banged I2C, polled. Absolute mouse by default, multi-touch mode available. |
+| `r8slog` | `ACPI\RWOA0002`, reserved RAM | Windows -> firmware log across a warm restart (5 copies, majority vote), bugcheck codes, the UFS driver's command log; restarts through the PMU (no PSCI SYSTEM_RESET in Samsung's EL3). |
 
 ## Repo layout
 
@@ -43,16 +56,16 @@ Details and the things to verify on hardware: [docs/porting-notes.md](docs/porti
 | `firmware/tools/make-esp.sh` | 1 GiB FAT32 ESP image with the UEFI Shell and a storage self-test |
 | `firmware/tools/build.ps1` | Same, natively on Windows (defaults to `D:\woa`) |
 | `.github/workflows/build-uefi.yml` | GitHub Actions build: `Mu-r8s.img` + an Odin tar (AP) |
-| `tools/device/` | PowerShell + adb scripts run against TWRP: backup, erase `uh`, partition + test ESP, flash UEFI, copy files to the ESP |
-| `tools/windows/Build-WinPE.ps1` | Make ARM64 WinPE media from a 23H2 ISO (or the ADK) |
-| `tools/windows/Deploy-Windows.ps1` | Apply Windows to a disk the PC can see (for later; Samsung UEFI has no Mass Storage) |
-| `drivers/` | Windows driver work for Exynos 990 (plans + hardware tables, no code yet) |
-| `docs/` | Install guide, porting notes, driver plan |
+| `tools/device/` | PowerShell + adb scripts run against TWRP: backup/restore Android, flash the UEFI, erase `uh`, partition, flash Windows, push drivers, pull logs |
+| `tools/windows/` | PC side: build the Windows image (`Build-WindowsImage.ps1`), desktop WinPE test (`Add-DesktopPe.ps1`) |
+| `tools/pe/` | `r8sdisk.exe`, a disk-state tool for the WinPE test |
+| `drivers/` | The Windows drivers above (built by Actions, test-signed) |
+| `docs/` | Install guide, porting notes, touch notes |
 
 ## Quick start
 
-Build (easiest: push this repo to GitHub, run **Actions → Build r8s UEFI**, download `Mu-r8s.img`).
-Then follow [docs/install.md](docs/install.md).
+Download the release, then follow [docs/install.md](docs/install.md). To build yourself:
+**Actions -> Build r8s UEFI** and **Build Windows drivers (ARM64)**.
 
 ## Requirements on the phone
 
