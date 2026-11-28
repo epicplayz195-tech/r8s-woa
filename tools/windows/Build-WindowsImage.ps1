@@ -86,7 +86,7 @@ if (-not $guids["esp"] -or -not $guids["win"]) { throw "esp/win not found in the
 Write-Host ("Phone: {0}, win {1:N1} GB, disk {2}, esp {3}, win {4}" -f $bl, ($winBytes / 1GB), $diskGuid, $guids["esp"], $guids["win"])
 
 # ---------------------------------------------------------------- helpers
-if (-not ("R8sVhd" -as [type])) {
+if (-not ("R8sReg" -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
 using System.IO;
@@ -124,6 +124,49 @@ public static class R8sVhd {
         int r = CreateVirtualDisk(ref t, path, 0, IntPtr.Zero, 0, 0, ref p, IntPtr.Zero, out h);
         if (r != 0) throw new Exception("CreateVirtualDisk failed: " + r);
         CloseHandle(h);
+    }
+}
+
+/* Writes registry values past the key's ACL with SeRestorePrivilege (REG_OPTION_BACKUP_RESTORE). */
+public static class R8sReg {
+    [StructLayout(LayoutKind.Sequential)] struct LUID { public uint Low; public int High; }
+    [StructLayout(LayoutKind.Sequential)] struct TOKEN_PRIVILEGES { public uint Count; public LUID Luid; public uint Attr; }
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr p, uint access, out IntPtr tok);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool LookupPrivilegeValue(string sys, string name, out LUID luid);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool AdjustTokenPrivileges(IntPtr tok, bool all, ref TOKEN_PRIVILEGES p, uint len, IntPtr prev, IntPtr retlen);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)] static extern int RegCreateKeyEx(UIntPtr root, string sub, int res, string cls, int opt, int sam, IntPtr sa, out UIntPtr key, out int disp);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)] static extern int RegSetValueEx(UIntPtr key, string name, int res, int type, byte[] data, int len);
+    [DllImport("advapi32.dll")] static extern int RegCloseKey(UIntPtr key);
+    static readonly UIntPtr HKLM = new UIntPtr(0x80000002u);
+
+    static void Enable(string name) {
+        IntPtr tok;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x28, out tok)) throw new Exception("OpenProcessToken: " + Marshal.GetLastWin32Error());
+        try {
+            TOKEN_PRIVILEGES tp = new TOKEN_PRIVILEGES(); tp.Count = 1; tp.Attr = 2;
+            if (!LookupPrivilegeValue(null, name, out tp.Luid)) throw new Exception("LookupPrivilegeValue: " + Marshal.GetLastWin32Error());
+            if (!AdjustTokenPrivileges(tok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero) || Marshal.GetLastWin32Error() != 0)
+                throw new Exception("Cannot enable " + name + ": " + Marshal.GetLastWin32Error());
+        } finally { CloseHandle(tok); }
+    }
+
+    public static void MarkSystemStore(string hive) {
+        Enable("SeRestorePrivilege"); Enable("SeBackupPrivilege");
+        UIntPtr k; int disp;
+        int r = RegCreateKeyEx(HKLM, hive + "\\Description", 0, null, 4 /* BACKUP_RESTORE */, 0x2 | 0x4 /* SET_VALUE|CREATE_SUB_KEY */, IntPtr.Zero, out k, out disp);
+        if (r != 0) throw new Exception("Opening " + hive + "\\Description failed: " + r);
+        try {
+            byte[] name = System.Text.Encoding.Unicode.GetBytes("BCD00000000\0");
+            Set(k, "KeyName", 1, name);
+            Set(k, "System", 4, BitConverter.GetBytes(1));
+            Set(k, "TreatAsSystem", 4, BitConverter.GetBytes(1));
+        } finally { RegCloseKey(k); }
+    }
+    static void Set(UIntPtr k, string n, int type, byte[] d) {
+        int r = RegSetValueEx(k, n, 0, type, d, d.Length);
+        if (r != 0) throw new Exception("Setting " + n + " failed: " + r);
     }
 }
 
@@ -358,10 +401,8 @@ try {
         $r = reg load HKLM\R8S_BCD $store 2>&1
         if ($LASTEXITCODE -ne 0) { throw "reg load of the new BCD failed: $r" }
         try {
-            foreach ($v in @(@("KeyName", "REG_SZ", "BCD00000000"), @("System", "REG_DWORD", "1"), @("TreatAsSystem", "REG_DWORD", "1"))) {
-                $r = reg add HKLM\R8S_BCD\Description /v $v[0] /t $v[1] /d $v[2] /f 2>&1
-                if ($LASTEXITCODE -ne 0) { throw "Marking the BCD as a system store failed: $r" }
-            }
+            # The BCD's keys only let SYSTEM write: go through the restore privilege (as backup tools do).
+            [R8sReg]::MarkSystemStore("R8S_BCD")
         } finally {
             [gc]::Collect(); Start-Sleep -Seconds 1
             $null = reg unload HKLM\R8S_BCD 2>&1
