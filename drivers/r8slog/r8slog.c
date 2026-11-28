@@ -24,6 +24,14 @@
 #define WINLOG_MAGIC   0x31474F4C57533852ULL      /* "R8SWLOG1" */
 #define WINLOG_COPIES  5
 
+/* Inbox: the last 16 KB of the region, after the 5 slices (unused by the firmware's vote).
+ * r8sufs.sys (which may not do file I/O where it runs) appends text there; the 5 s timer
+ * copies it into the log. Layout: ULONG Magic, Check, GenLow, GenHigh, Head; text at +64. */
+#define INBOX_SIZE     0x4000
+#define INBOX_HDR      64
+#define INBOX_DATA     (INBOX_SIZE - INBOX_HDR)
+#define INBOX_MAGIC    0x49534655u                /* "UFSI" */
+
 typedef struct _WINLOG_HEADER {
     ULONG64 Magic;
     ULONG   Length;       /* bytes of text after the header */
@@ -45,6 +53,9 @@ typedef struct _DEVICE_CONTEXT {
     WDFTIMER        Timer;
     WDFWORKITEM     WorkItem;
     LONGLONG        Mirrored;     /* bytes of \SystemRoot\r8s-log.txt already copied */
+    volatile UCHAR  *Inbox;       /* the 16 KB after the copies, written by r8sufs.sys */
+    ULONG64         InboxGen;
+    ULONG           InboxRead;    /* inbox Head already copied */
     BOOLEAN         BugCheckRegistered;
     KBUGCHECK_CALLBACK_RECORD BugCheckRecord;
 } DEVICE_CONTEXT;
@@ -303,6 +314,21 @@ R8sLogPrepareHardware(_In_ WDFDEVICE Device, _In_ WDFCMRESLIST Raw, _In_ WDFCMRE
     StoreHeader(Ctx);
     gCtx = Ctx;
 
+    Ctx->Inbox = NULL;
+    if (Ctx->Size >= WINLOG_COPIES * Ctx->Slice + INBOX_SIZE) {
+        volatile ULONG *H;
+
+        Ctx->Inbox = Ctx->Base + Ctx->Size - INBOX_SIZE;
+        H = (volatile ULONG *)Ctx->Inbox;
+        Ctx->InboxGen = ((ULONG64)H[3] << 32) | H[2];
+        Ctx->InboxRead = H[4];
+        /* Left over from the last boot (r8sufs started later in that boot than "now"): skip it.
+         * If r8sufs already started in this boot (a boot driver), copy everything. */
+        if ((H[0] == INBOX_MAGIC) && (H[1] == (INBOX_MAGIC ^ H[2] ^ H[3])) && (Ctx->InboxGen <= KeQueryInterruptTime())) {
+            Ctx->InboxRead = 0;
+        }
+    }
+
     P = PutStr(Line, End, "\r\n[r8slog] driver started, ");
     P = PutDec(P, End, WINLOG_COPIES);
     P = PutStr(P, End, " copies x ");
@@ -343,6 +369,45 @@ R8sLogReleaseHardware(_In_ WDFDEVICE Device, _In_ WDFCMRESLIST Translated)
     return STATUS_SUCCESS;
 }
 
+static void
+DrainInbox(DEVICE_CONTEXT *Ctx)
+{
+    volatile ULONG *H;
+    ULONG64        Gen;
+    ULONG          Head, Count, i;
+    static UCHAR   Buffer[INBOX_DATA];      /* timer callbacks do not overlap */
+
+    if (Ctx->Inbox == NULL) {
+        return;
+    }
+    H = (volatile ULONG *)Ctx->Inbox;
+    if ((H[0] != INBOX_MAGIC) || (H[1] != (INBOX_MAGIC ^ H[2] ^ H[3]))) {
+        return;
+    }
+    Gen = ((ULONG64)H[3] << 32) | H[2];
+    if (Gen != Ctx->InboxGen) {             /* r8sufs (re)started */
+        Ctx->InboxGen = Gen;
+        Ctx->InboxRead = 0;
+    }
+    Head = H[4];
+    Count = Head - Ctx->InboxRead;
+    if (Count == 0) {
+        return;
+    }
+    if (Count > INBOX_DATA) {
+        AppendLine(Ctx, "\r\n[r8slog] (r8sufs inbox overflowed, some lines lost)\r\n", TRUE);
+        Ctx->InboxRead = Head - INBOX_DATA;
+        Count = INBOX_DATA;
+    }
+    for (i = 0; i < Count; i++) {
+        Buffer[i] = Ctx->Inbox[INBOX_HDR + (Ctx->InboxRead + i) % INBOX_DATA];
+    }
+    Ctx->InboxRead = Head;
+    WdfSpinLockAcquire(Ctx->Lock);
+    AppendRaw(Ctx, Buffer, Count);
+    WdfSpinLockRelease(Ctx->Lock);
+}
+
 VOID
 R8sLogTimer(_In_ WDFTIMER Timer)
 {
@@ -354,6 +419,7 @@ R8sLogTimer(_In_ WDFTIMER Timer)
     P = PutStr(P, End, " s\r\n");
     *P = '\0';
     AppendLine(Ctx, Line, TRUE);
+    DrainInbox(Ctx);
 
     WdfWorkItemEnqueue(Ctx->WorkItem);     /* copy new text from the file (PASSIVE_LEVEL) */
 }

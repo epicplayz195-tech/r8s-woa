@@ -132,19 +132,9 @@ typedef struct _RANGE {
     ULONGLONG First, Last;      /* inclusive, logical blocks */
 } RANGE;
 
-/* One line of the command log (see LogWork). */
-typedef enum { R_OK, R_UNDERRUN, R_CHECK, R_TIMEOUT, R_FAILED, R_REFUSED, R_LOCAL, R_GPT } LOG_RESULT;
+typedef enum { R_OK, R_UNDERRUN, R_CHECK, R_TIMEOUT, R_FAILED, R_REFUSED, R_LOCAL } LOG_RESULT;
 
-typedef struct _LOG_REC {
-    UCHAR     Op, Result, ScsiStatus, SenseKey, Asc, Ascq, Ocs, Pad;
-    ULONG     Len;
-    ULONGLONG Lba;
-    ULONG     Blocks;
-    ULONG     Micros;
-} LOG_REC;
-
-#define LOG_RING            256
-#define LOG_ALL_FIRST       400             /* every command until then, afterwards only errors */
+#define LOG_ALL_FIRST       600             /* every command until then, afterwards only errors */
 
 typedef struct _ADAPTER {
     PUCHAR    Hci;
@@ -162,17 +152,26 @@ typedef struct _ADAPTER {
     RANGE     Range[MAX_RANGES];
     UCHAR     LastResponse[64];
     UCHAR     LastOcs;
-    PVOID     Worker;
-    volatile LONG WorkPending;
-    volatile LONG LogHead;          /* records written by HwStartIo */
-    LONG      LogTail;              /* records written to the file by LogWork */
+    volatile UCHAR *Inbox;          /* r8slog inbox (see Say), NULL if it could not be mapped */
     ULONG     Seq;
     ULONG     Errors;
-    volatile LONG QueueFailures, FileFailures, WorkRuns;
-    UCHAR     LastErrOp, LastErrResult, LastErrKey, LastErrAsc;
-    ULONG     LastErrLba;
-    LOG_REC   Log[LOG_RING];
+    ULONG     LastResidual;
+    ULONG     LastIs;
 } ADAPTER, *PADAPTER;
+
+/*
+ * Log inbox: the last 16 KB of the r8slog RAM region (DSDT WLOG 0xFDB10000, 4 MB). r8slog uses
+ * 5 page-aligned slices of 835584 bytes = 4177920 bytes, so 0xFDF0C000..0xFDF0FFFF is free.
+ * r8sufs appends text to a ring there with plain stores (any IRQL); r8slog's 5 s timer copies
+ * new text into the log the firmware saves. No files, no work items, no registry.
+ * Header: Magic, Check (= Magic ^ Gen low ^ Gen high), Gen (interrupt time at start), Head
+ * (total bytes ever written; ring position = Head % INBOX_DATA).
+ */
+#define INBOX_PHYS          0xFDF0C000ULL
+#define INBOX_SIZE          0x4000
+#define INBOX_HDR           64
+#define INBOX_DATA          (INBOX_SIZE - INBOX_HDR)
+#define INBOX_MAGIC         0x49534655u     /* "UFSI" */
 
 static ULONG Rd(PADAPTER A, ULONG Off) { return StorPortReadRegisterUlong(A, (PULONG)(A->Hci + Off)); }
 static VOID  Wr(PADAPTER A, ULONG Off, ULONG V) { StorPortWriteRegisterUlong(A, (PULONG)(A->Hci + Off), V); }
@@ -183,13 +182,73 @@ static ULONGLONG Be64(const UCHAR *P) { return ((ULONGLONG)Be32(P) << 32) | Be32
 static ULONGLONG Le64(const UCHAR *P) { ULONGLONG v = 0; int i; for (i = 7; i >= 0; i--) { v = (v << 8) | P[i]; } return v; }
 static ULONG Le32(const UCHAR *P) { return (ULONG)P[0] | ((ULONG)P[1] << 8) | ((ULONG)P[2] << 16) | ((ULONG)P[3] << 24); }
 
+/* Append a line to the r8slog inbox. Any IRQL; callers are serialised by Storport
+ * (half duplex) except HwFindAdapter, which runs before any I/O. */
+static VOID
+Say(PADAPTER A, PCSTR Fmt, ...)
+{
+    CHAR line[256];
+    va_list ap;
+    size_t n = 0, i;
+    volatile ULONG *hdr;
+    ULONG head;
+
+    if (A->Inbox == NULL) {
+        return;
+    }
+    va_start(ap, Fmt);
+    (VOID)RtlStringCbVPrintfA(line, sizeof(line), Fmt, ap);
+    va_end(ap);
+    if (!NT_SUCCESS(RtlStringCbLengthA(line, sizeof(line), &n))) {
+        return;
+    }
+    hdr = (volatile ULONG *)A->Inbox;
+    head = hdr[4];
+    for (i = 0; i < n; i++) {
+        A->Inbox[INBOX_HDR + (head + i) % INBOX_DATA] = (UCHAR)line[i];
+    }
+    MemoryBarrier();
+    hdr[4] = head + (ULONG)n;
+    MemoryBarrier();
+}
+
+static VOID
+InboxStart(PADAPTER A)
+{
+    PHYSICAL_ADDRESS pa;
+    volatile ULONG *hdr;
+    ULONGLONG gen = KeQueryInterruptTime();
+
+    pa.QuadPart = (LONGLONG)INBOX_PHYS;
+    A->Inbox = (volatile UCHAR *)MmMapIoSpaceEx(pa, INBOX_SIZE, PAGE_READWRITE | PAGE_NOCACHE);
+    if (A->Inbox == NULL) {
+        return;
+    }
+    hdr = (volatile ULONG *)A->Inbox;
+    hdr[0] = 0;                             /* invalid while being set up */
+    MemoryBarrier();
+    hdr[2] = (ULONG)gen;
+    hdr[3] = (ULONG)(gen >> 32);
+    hdr[4] = 0;
+    hdr[1] = INBOX_MAGIC ^ (ULONG)gen ^ (ULONG)(gen >> 32);
+    MemoryBarrier();
+    hdr[0] = INBOX_MAGIC;
+    MemoryBarrier();
+    Say(A, "[ufs] r8sufs log inbox up, t=%I64u ms\r\n", gen / 10000);
+}
+
 /* Start-up notes for the log: HKLM\SYSTEM\CurrentControlSet\Services\r8sufs\Parameters\Device.
  * Only at PASSIVE_LEVEL (HwFindAdapter). */
+static VOID Say(PADAPTER A, PCSTR Fmt, ...);
+
 static VOID
 Note(PADAPTER A, PCSTR Name, ULONG Value)
 {
     ULONG len = sizeof(ULONG);
-    PUCHAR buf = StorPortAllocateRegistryBuffer(A, &len);
+    PUCHAR buf;
+
+    Say(A, "[ufs] %s = 0x%X\r\n", Name, Value);
+    buf = StorPortAllocateRegistryBuffer(A, &len);
 
     if (buf == NULL) {
         return;
@@ -295,11 +354,15 @@ Exec(PADAPTER A, const UCHAR *Cdb, ULONG CdbLen, ULONG Dir, ULONG Length, PUCHAR
         is = Rd(A, REG_IS);
         if (is & IS_FATAL) {
             A->Fatal = TRUE;
+            Say(A, "[ufs] FATAL controller error, IS %08X, op %02X: no more commands\r\n", is, Cdb[0]);
             break;
         }
         StorPortStallExecution(POLL_US);
     }
-    Wr(A, REG_IS, Rd(A, REG_IS));
+    A->LastIs = Rd(A, REG_IS);
+    Wr(A, REG_IS, A->LastIs);
+    A->LastOcs = (UCHAR)(t->Dw2 & 0xF);
+    A->LastResidual = 0;
     if (A->Fatal || (Rd(A, REG_UTRLDBR) & 1)) {
         Wr(A, REG_UTRLCLR, 1);              /* quirk: one clears */
         return A->Fatal ? EXEC_FAILED : EXEC_TIMEOUT;
@@ -313,13 +376,12 @@ Exec(PADAPTER A, const UCHAR *Cdb, ULONG CdbLen, ULONG Dir, ULONG Length, PUCHAR
     }
     *ScsiStatus = u->Response[7];
     *Residual = Be32(&u->Response[12]);
+    A->LastResidual = *Residual;
     segLen = Be16(&u->Response[10]);
     UNREFERENCED_PARAMETER(segLen);
     return *ScsiStatus == SCSISTAT_GOOD ? EXEC_OK : EXEC_CHECK;
 }
 
-static VOID Record(PADAPTER A, const UCHAR *Cdb, ULONG Len, UCHAR Result, UCHAR ScsiStatus, const UCHAR *Sense, ULONG Us);
-VOID LogWork(PVOID DeviceExtension, PVOID Context, PVOID Worker);
 
 /* Internal read of Blocks blocks at Lba into the bounce buffer. */
 static BOOLEAN
@@ -345,13 +407,22 @@ ReadGpt(PADAPTER A)
     A->GptRead = TRUE;
     A->RangeCount = 0;
     if (Exec(A, cdb, 10, UTRD_DD_IN, 8, &st, &res) != EXEC_OK) {
+        Say(A, "[ufs] gpt: READ CAPACITY failed, st %02X ocs %X is %08X\r\n", st, A->LastOcs, A->LastIs);
         return;
     }
     A->BlockSize = Be32(A->Bounce + 4);
+    Say(A, "[ufs] gpt: capacity last lba %u, block %u\r\n", Be32(A->Bounce), A->BlockSize);
     if (A->BlockSize != 512 && A->BlockSize != 4096) {
         return;
     }
-    if (!ReadBlocks(A, 1, 1) || RtlCompareMemory(A->Bounce, "EFI PART", 8) != 8) {
+    if (!ReadBlocks(A, 1, 1)) {
+        Say(A, "[ufs] gpt: read of lba 1 failed, ocs %X is %08X resp %02X %02X %02X %02X\r\n", A->LastOcs, A->LastIs,
+            A->LastResponse[0], A->LastResponse[5], A->LastResponse[6], A->LastResponse[7]);
+        return;
+    }
+    if (RtlCompareMemory(A->Bounce, "EFI PART", 8) != 8) {
+        Say(A, "[ufs] gpt: lba 1 is not a GPT header: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+            A->Bounce[0], A->Bounce[1], A->Bounce[2], A->Bounce[3], A->Bounce[4], A->Bounce[5], A->Bounce[6], A->Bounce[7]);
         return;
     }
     entLba = Le64(A->Bounce + 72);
@@ -376,8 +447,11 @@ ReadGpt(PADAPTER A)
             A->RangeCount++;
         }
     }
-    Record(A, NULL, A->BlockSize, R_GPT, 0, NULL, 0);
-    A->Log[(A->LogHead - 1) % LOG_RING].Blocks = A->RangeCount;
+    Say(A, "[ufs] gpt: block size %u, %u writable ranges", A->BlockSize, A->RangeCount);
+    for (i = 0; i < A->RangeCount; i++) {
+        Say(A, " [%I64u..%I64u]", A->Range[i].First, A->Range[i].Last);
+    }
+    Say(A, "\r\n");
 }
 
 static BOOLEAN
@@ -409,122 +483,40 @@ ResultName(UCHAR R)
     case R_FAILED:   return "FAILED";
     case R_REFUSED:  return "refused (write protect / not allowed)";
     case R_LOCAL:    return "answered locally";
-    default:         return "gpt";
+    default:         return "?";
     }
-}
-
-/* PASSIVE_LEVEL (Storport work item): append the new records to \SystemRoot\r8s-log.txt,
- * which r8slog.sys mirrors into the RAM log the firmware saves after a restart. */
-VOID
-LogWork(PVOID DeviceExtension, PVOID Context, PVOID Worker)
-{
-    PADAPTER a = (PADAPTER)DeviceExtension;
-    UNICODE_STRING path;
-    OBJECT_ATTRIBUTES oa;
-    IO_STATUS_BLOCK io;
-    HANDLE h;
-    CHAR line[200];
-    LONG head;
-    NTSTATUS st;
-
-    UNREFERENCED_PARAMETER(Context);
-    UNREFERENCED_PARAMETER(Worker);
-
-    /* Running totals in the registry too (Parameters\Device), in case the file can't be written. */
-    InterlockedIncrement(&a->WorkRuns);
-    Note(a, "Commands", a->Seq);
-    Note(a, "Errors", a->Errors);
-    Note(a, "LogQueueFailures", (ULONG)a->QueueFailures);
-    Note(a, "LogFileFailures", (ULONG)a->FileFailures);
-    Note(a, "LogWorkRuns", (ULONG)a->WorkRuns);
-    Note(a, "LastErrorOp", a->LastErrOp);
-    Note(a, "LastErrorResult", a->LastErrResult);
-    Note(a, "LastErrorSense", ((ULONG)a->LastErrKey << 8) | a->LastErrAsc);
-    Note(a, "LastErrorLba", a->LastErrLba);
-
-    RtlInitUnicodeString(&path, L"\\SystemRoot\\r8s-log.txt");
-    InitializeObjectAttributes(&oa, &path, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
-    st = ZwCreateFile(&h, FILE_APPEND_DATA | SYNCHRONIZE, &oa, &io, NULL, FILE_ATTRIBUTE_NORMAL,
-                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN_IF,
-                      FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0);
-    if (!NT_SUCCESS(st)) {
-        InterlockedIncrement(&a->FileFailures);
-        Note(a, "LogFileStatus", (ULONG)st);
-    } else {
-        head = a->LogHead;
-        if (head - a->LogTail > LOG_RING) {
-            a->LogTail = head - LOG_RING;
-        }
-        while (a->LogTail < head) {
-            const LOG_REC *r = &a->Log[a->LogTail % LOG_RING];
-            size_t n;
-
-            if (r->Result == R_GPT) {
-                RtlStringCbPrintfA(line, sizeof(line), "[ufs] block size %u, writable GPT ranges (esp/win): %u\r\n",
-                                   r->Len, r->Blocks);
-            } else {
-                RtlStringCbPrintfA(line, sizeof(line),
-                                   "[ufs] #%u op %02X lba %I64u n %u len %u -> %s st %02X sense %X/%02X/%02X ocs %X %u us\r\n",
-                                   (ULONG)a->LogTail + 1, r->Op, r->Lba, r->Blocks, r->Len, ResultName(r->Result),
-                                   r->ScsiStatus, r->SenseKey, r->Asc, r->Ascq, r->Ocs, r->Micros);
-            }
-            if (NT_SUCCESS(RtlStringCbLengthA(line, sizeof(line), &n))) {
-                (VOID)ZwWriteFile(h, NULL, NULL, NULL, &io, line, (ULONG)n, NULL, NULL);
-            }
-            a->LogTail++;
-        }
-        ZwClose(h);
-    }
-    InterlockedExchange(&a->WorkPending, 0);
 }
 
 static VOID
 Record(PADAPTER A, const UCHAR *Cdb, ULONG Len, UCHAR Result, UCHAR ScsiStatus, const UCHAR *Sense, ULONG Us)
 {
-    LOG_REC *r;
     BOOLEAN error = Result == R_CHECK || Result == R_TIMEOUT || Result == R_FAILED || Result == R_REFUSED;
+    ULONGLONG lba = 0;
+    ULONG blocks = 0;
+    UCHAR op = Cdb ? Cdb[0] : 0;
 
     A->Seq++;
     if (error) {
         A->Errors++;
     }
-    if (A->Seq > LOG_ALL_FIRST && !error && Result != R_GPT) {
+    if (A->Seq > LOG_ALL_FIRST && !error) {
+        if ((A->Seq % 1000) == 0) {
+            Say(A, "[ufs] %u commands, %u errors\r\n", A->Seq, A->Errors);
+        }
         return;
     }
-    r = &A->Log[A->LogHead % LOG_RING];
-    RtlZeroMemory(r, sizeof(*r));
-    r->Op = Cdb ? Cdb[0] : 0;
-    r->Result = Result;
-    r->ScsiStatus = ScsiStatus;
-    r->Len = Len;
-    r->Micros = Us;
-    r->Ocs = A->LastOcs;
-    if (Cdb != NULL) {
-        switch (Cdb[0]) {
-        case OP_READ10: case OP_WRITE10: case OP_VERIFY10:
-            r->Lba = Be32(Cdb + 2); r->Blocks = Be16(Cdb + 7); break;
-        case OP_READ16: case OP_WRITE16: case OP_VERIFY16:
-            r->Lba = Be64(Cdb + 2); r->Blocks = Be32(Cdb + 10); break;
-        default:
-            break;
-        }
+    switch (op) {
+    case OP_READ10: case OP_WRITE10: case OP_VERIFY10:
+        lba = Be32(Cdb + 2); blocks = Be16(Cdb + 7); break;
+    case OP_READ16: case OP_WRITE16: case OP_VERIFY16:
+        lba = Be64(Cdb + 2); blocks = Be32(Cdb + 10); break;
+    default:
+        break;
     }
-    if (Sense != NULL) {                    /* fixed-format sense */
-        r->SenseKey = Sense[2] & 0xF;
-        r->Asc = Sense[12];
-        r->Ascq = Sense[13];
-    }
-    if (error) {
-        A->LastErrOp = r->Op; A->LastErrResult = Result; A->LastErrKey = r->SenseKey;
-        A->LastErrAsc = r->Asc; A->LastErrLba = (ULONG)r->Lba;
-    }
-    InterlockedIncrement(&A->LogHead);
-    if (A->Worker != NULL && InterlockedCompareExchange(&A->WorkPending, 1, 0) == 0) {
-        if (StorPortQueueWorkItem(A, LogWork, A->Worker, NULL) != STOR_STATUS_SUCCESS) {
-            InterlockedIncrement(&A->QueueFailures);
-            InterlockedExchange(&A->WorkPending, 0);
-        }
-    }
+    Say(A, "[ufs] #%u op %02X lba %I64u n %u len %u -> %s st %02X sense %X/%02X/%02X ocs %X res %u is %08X%s %u us\r\n",
+        A->Seq, op, lba, blocks, Len, ResultName(Result), ScsiStatus,
+        Sense ? (Sense[2] & 0xF) : 0, Sense ? Sense[12] : 0, Sense ? Sense[13] : 0,
+        A->LastOcs, A->LastResidual, A->LastIs, A->Fatal ? " FATAL" : "", Us);
 }
 
 static ULONG
@@ -746,6 +738,9 @@ HwStartIo(PVOID DeviceExtension, PSCSI_REQUEST_BLOCK Srb)
         Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
         break;
     }
+    if (Srb->Function != SRB_FUNCTION_EXECUTE_SCSI) {
+        Say(a, "[ufs] srb function %02X -> %02X\r\n", Srb->Function, Srb->SrbStatus);
+    }
     StorPortNotification(RequestComplete, DeviceExtension, Srb);
     return TRUE;
 }
@@ -769,8 +764,10 @@ BOOLEAN
 HwInitialize(PVOID DeviceExtension)
 {
     PADAPTER a = (PADAPTER)DeviceExtension;
+    BOOLEAN ok = a->Ready ? TRUE : TakeOver(a);
 
-    return a->Ready ? TRUE : TakeOver(a);
+    Say(a, "[ufs] HwInitialize -> %u (HCS %08X UTRLRSR %08X)\r\n", ok, Rd(a, REG_HCS), Rd(a, REG_UTRLRSR));
+    return ok;
 }
 
 SCSI_ADAPTER_CONTROL_STATUS
@@ -778,6 +775,9 @@ HwAdapterControl(PVOID DeviceExtension, SCSI_ADAPTER_CONTROL_TYPE Type, PVOID Pa
 {
     PSCSI_SUPPORTED_CONTROL_TYPE_LIST list;
 
+    if (Type != ScsiQuerySupportedControlTypes) {
+        Say((PADAPTER)DeviceExtension, "[ufs] adapter control %u\r\n", (ULONG)Type);
+    }
     switch (Type) {
     case ScsiQuerySupportedControlTypes:
         list = (PSCSI_SUPPORTED_CONTROL_TYPE_LIST)Parameters;
@@ -808,6 +808,7 @@ HwFindAdapter(PVOID DeviceExtension, PVOID HwContext, PVOID BusInformation, PCHA
     UNREFERENCED_PARAMETER(ArgumentString);
     *Again = FALSE;
 
+    InboxStart(a);
     Note(a, "Step", 1);
     Note(a, "InterfaceType", (ULONG)ConfigInfo->AdapterInterfaceType);
     Note(a, "AccessRanges", ConfigInfo->NumberOfAccessRanges);
@@ -884,10 +885,6 @@ HwFindAdapter(PVOID DeviceExtension, PVOID HwContext, PVOID BusInformation, PCHA
     a->Ucd = (UCD *)(a->Uncached + OFF_UCD);
     a->Bounce = a->Uncached + OFF_BOUNCE;
     a->BlockSize = 4096;
-    if (StorPortInitializeWorker(a, &a->Worker) != STOR_STATUS_SUCCESS) {
-        a->Worker = NULL;                   /* no command log, everything else works */
-    }
-    Note(a, "LogWorker", a->Worker != NULL);
 
     /* Take the controller over here, at PASSIVE_LEVEL, so the outcome can be noted. */
     Note(a, "TakeOver", TakeOver(a) ? 1 : 0);

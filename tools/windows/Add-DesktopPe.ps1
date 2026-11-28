@@ -104,18 +104,22 @@ pnputil /enum-devices /class SCSIAdapter >> %LOG% 2>&1
 pnputil /enum-devices /class DiskDrive >> %LOG% 2>&1
 echo [ufs] volumes Windows found >> %LOG%
 mountvol >> %LOG% 2>&1
+pnputil /enum-devices /class Volume >> %LOG% 2>&1
+fsutil fsinfo drives >> %LOG% 2>&1
 echo [ufs] mount the esp as S: and read it >> %LOG%
 mountvol S: /S >> %LOG% 2>&1
-dir S:\ >> %LOG% 2>&1
-echo [ufs] write test, the esp is one of the two writable partitions >> %LOG%
-echo r8sufs write test %DATE% %TIME% > S:\r8s-ufs-write-test.txt
-type S:\r8s-ufs-write-test.txt >> %LOG% 2>&1
+if exist S:\ (
+  dir S:\ >> %LOG% 2>&1
+  echo [ufs] write test, the esp is one of the two writable partitions >> %LOG%
+  echo r8sufs write test %DATE% %TIME% > S:\r8s-ufs-write-test.txt
+  type S:\r8s-ufs-write-test.txt >> %LOG% 2>&1
+) else (
+  echo [ufs] no S: drive, write test skipped >> %LOG%
+)
 echo [ufs] test done >> %LOG%
 :loop
 echo [touch] %TIME% >> %LOG%
 reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\RWOA0003\0\Device Parameters" >> %LOG% 2>&1
-echo [ufs] %TIME% >> %LOG%
-reg query "HKLM\SYSTEM\CurrentControlSet\Services\r8sufs\Parameters\Device" >> %LOG% 2>&1
 ping -n 31 127.0.0.1 > nul
 goto loop
 '@

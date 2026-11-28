@@ -39,7 +39,7 @@
       <TreatWarningAsError>true</TreatWarningAsError>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>storport.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>storport.lib;ntoskrnl.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
