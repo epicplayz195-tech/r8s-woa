@@ -96,8 +96,21 @@ pnputil /enum-devices /problem >> %LOG% 2>&1
 reg query "HKLM\SYSTEM\CurrentControlSet\Enum\HID" /s /v DeviceDesc >> %LOG% 2>&1
 echo [ufs] driver start-up notes >> %LOG%
 reg query "HKLM\SYSTEM\CurrentControlSet\Services\r8sufs\Parameters\Device" >> %LOG% 2>&1
+echo [ufs] files in X:\r8s >> %LOG%
+dir /b X:\r8s >> %LOG% 2>&1
 rem The disk test, in order (each step is logged before it starts, so a hang shows where).
-call X:\r8s\ufs-test.cmd
+echo [ufs] storage adapters and disks Windows has >> %LOG%
+pnputil /enum-devices /class SCSIAdapter >> %LOG% 2>&1
+pnputil /enum-devices /class DiskDrive >> %LOG% 2>&1
+echo [ufs] disks seen through r8sufs, diskpart >> %LOG%
+diskpart /s X:\r8s\ufs-list.txt >> %LOG% 2>&1
+echo [ufs] mount the esp as S: and read it >> %LOG%
+mountvol S: /S >> %LOG% 2>&1
+dir S:\ >> %LOG% 2>&1
+echo [ufs] write test, the esp is one of the two writable partitions >> %LOG%
+echo r8sufs write test %DATE% %TIME% > S:\r8s-ufs-write-test.txt
+type S:\r8s-ufs-write-test.txt >> %LOG% 2>&1
+echo [ufs] test done >> %LOG%
 :loop
 echo [touch] %TIME% >> %LOG%
 reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\RWOA0003\0\Device Parameters" >> %LOG% 2>&1
@@ -105,23 +118,6 @@ ping -n 31 127.0.0.1 > nul
 goto loop
 '@
         [IO.File]::WriteAllText((Join-Path $mount "r8s\install-drivers.cmd"), ($cmd -replace "`r?`n", "`r`n"), [Text.Encoding]::ASCII)
-        $ufsTest = @'
-@echo off
-set LOG=X:\Windows\r8s-log.txt
-echo [ufs] storage adapters and disks Windows has >> %LOG%
-pnputil /enum-devices /class SCSIAdapter >> %LOG% 2>&1
-pnputil /enum-devices /class DiskDrive >> %LOG% 2>&1
-echo [ufs] disks seen through r8sufs (diskpart) >> %LOG%
-diskpart /s X:\r8s\ufs-list.txt >> %LOG% 2>&1
-echo [ufs] mount the esp as S: and read it >> %LOG%
-mountvol S: /S >> %LOG% 2>&1
-dir S:\ >> %LOG% 2>&1
-echo [ufs] write test (the esp is one of the two writable partitions) >> %LOG%
-echo r8sufs write test %DATE% %TIME% > S:\r8s-ufs-write-test.txt
-type S:\r8s-ufs-write-test.txt >> %LOG% 2>&1
-echo [ufs] test done >> %LOG%
-'@
-        [IO.File]::WriteAllText((Join-Path $mount "r8s\ufs-test.cmd"), ($ufsTest -replace "`r?`n", "`r`n"), [Text.Encoding]::ASCII)
         $ufsList = "list disk`r`nselect disk 0`r`ndetail disk`r`nlist partition`r`nlist volume`r`n"
         [IO.File]::WriteAllText((Join-Path $mount "r8s\ufs-list.txt"), $ufsList, [Text.Encoding]::ASCII)
 
