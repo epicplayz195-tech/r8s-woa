@@ -352,6 +352,20 @@ try {
         $bcd = { $r = bcdedit /store $store @args 2>&1; if ($LASTEXITCODE -ne 0) { throw "bcdedit $($args -join ' ') failed: $r" }; "$r" }
         $r = bcdedit /createstore $store 2>&1
         if ($LASTEXITCODE -ne 0) { throw "bcdedit /createstore failed: $r" }
+        # Mark it as a system store, as bcdboot does. Without this, setup's specialize pass
+        # (Sysprep_Specialize_Bcd) fails "File is not system store" and Windows setup stops with
+        # "could not configure Windows to run on this computer's hardware".
+        $r = reg load HKLM\R8S_BCD $store 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "reg load of the new BCD failed: $r" }
+        try {
+            foreach ($v in @(@("KeyName", "REG_SZ", "BCD00000000"), @("System", "REG_DWORD", "1"), @("TreatAsSystem", "REG_DWORD", "1"))) {
+                $r = reg add HKLM\R8S_BCD\Description /v $v[0] /t $v[1] /d $v[2] /f 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "Marking the BCD as a system store failed: $r" }
+            }
+        } finally {
+            [gc]::Collect(); Start-Sleep -Seconds 1
+            $null = reg unload HKLM\R8S_BCD 2>&1
+        }
         $null = & $bcd /create "{bootmgr}" /d "Windows Boot Manager"
         $null = & $bcd /set "{bootmgr}" device "partition=${E}:"
         $null = & $bcd /set "{bootmgr}" path "\EFI\Microsoft\Boot\bootmgfw.efi"
