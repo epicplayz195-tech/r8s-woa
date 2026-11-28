@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "drivers/**"
+      - "tools/pe/**"
       - ".github/workflows/build-drivers.yml"
   workflow_dispatch:
 
@@ -59,6 +60,14 @@ jobs:
           }
           Export-Certificate -Cert $cert -FilePath out\drivers\r8s-woa-test.cer | Out-Null
           Get-ChildItem -Recurse out -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName).Hash.ToLower(), $_.FullName.Substring((Resolve-Path out).Path.Length + 1) } | Tee-Object out\drivers\SHA256SUMS
+
+      - name: Build r8sdisk.exe (ARM64 console tool for the WinPE test)
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS=%%i
+          call "%VS%\VC\Auxiliary\Build\vcvarsall.bat" x64_arm64 || exit /b 1
+          cl /nologo /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS tools\pe\r8sdisk.c /Fo:obj\ /Fe:out\drivers\r8sdisk.exe advapi32.lib || exit /b 1
+          dir out\drivers\r8sdisk.exe
 
       - uses: actions/upload-artifact@v4
         with:

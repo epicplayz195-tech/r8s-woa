@@ -102,6 +102,11 @@ rem The disk test, in order (each step is logged before it starts, so a hang sho
 echo [ufs] storage adapters and disks Windows has >> %LOG%
 pnputil /enum-devices /class SCSIAdapter >> %LOG% 2>&1
 pnputil /enum-devices /class DiskDrive >> %LOG% 2>&1
+echo [ufs] disk state before (r8sdisk) >> %LOG%
+X:\r8s\drivers\r8sdisk.exe >> %LOG% 2>&1
+echo [ufs] bring the disk online if it is offline (this boot only) >> %LOG%
+X:\r8s\drivers\r8sdisk.exe online >> %LOG% 2>&1
+ping -n 6 127.0.0.1 > nul
 echo [ufs] volumes Windows found >> %LOG%
 mountvol >> %LOG% 2>&1
 pnputil /enum-devices /class Volume >> %LOG% 2>&1
@@ -117,9 +122,6 @@ if exist S:\ (
   echo [ufs] no S: drive, write test skipped >> %LOG%
 )
 echo [ufs] test done >> %LOG%
-echo [ufs] diskpart, read-only: san policy, disk state, partitions (last: it may hang) >> %LOG%
-diskpart /s X:\r8s\ufs-list.txt >> %LOG% 2>&1
-echo [ufs] diskpart done >> %LOG%
 :loop
 echo [touch] %TIME% >> %LOG%
 reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\RWOA0003\0\Device Parameters" >> %LOG% 2>&1
