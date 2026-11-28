@@ -126,9 +126,7 @@ goto loop
         # Disks online whatever their bus (WinPE's default SAN policy takes "shared bus" disks offline).
         reg load HKLM\R8S_PE_SYS (Join-Path $mount "Windows\System32\config\SYSTEM") | Out-Null
         try {
-            foreach ($cs in "ControlSet001", "ControlSet002") {
-                reg add "HKLM\R8S_PE_SYS\$cs\Services\partmgr\Parameters" /v SanPolicy /t REG_DWORD /d 1 /f 2>$null | Out-Null
-            }
+            reg add "HKLM\R8S_PE_SYS\ControlSet001\Services\partmgr\Parameters" /v SanPolicy /t REG_DWORD /d 1 /f | Out-Null
             Write-Host "    SAN policy: online all"
         } finally {
             [gc]::Collect(); Start-Sleep -Seconds 1
