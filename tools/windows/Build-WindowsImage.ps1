@@ -32,7 +32,9 @@ param(
     [string]$Out     = "D:\woa\out\windows",
     [string]$Scratch = "D:\woa\scratch",
     [string]$UserName = "User",
-    [string]$Password = "r8s"
+    [string]$Password = "r8s",
+    # Keep the VHDX of an earlier run that got as far as the drivers (skips the 15-30 min apply).
+    [switch]$Reuse
 )
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\..\device\Common.ps1"
@@ -205,6 +207,30 @@ function Dismount-Work {
 
 # ---------------------------------------------------------------- 2. the 4Kn disk
 Dismount-Work
+$reused = $false
+if ($Reuse -and (Test-Path $vhd)) {
+    $disk = Mount-DiskImage -ImagePath $vhd -NoDriveLetter -PassThru | Get-Disk
+    $parts = Get-Partition -DiskNumber $disk.Number
+    $espPart = $parts | Where-Object GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' | Select-Object -First 1
+    $winPart = $parts | Where-Object GptType -eq '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' | Select-Object -First 1
+    if ($espPart -and $winPart -and $winPart.Size -eq $winBytes) {
+        $used = (Get-PSDrive -PSProvider FileSystem).Name
+        $free = [char[]]"WVUTSRQPONMLKJIH" | Where-Object { $used -notcontains [string]$_ }
+        $W = [string]$free[0]; $E = [string]$free[1]
+        Set-Partition -DiskNumber $disk.Number -PartitionNumber $winPart.PartitionNumber -NewDriveLetter $W
+        Set-Partition -DiskNumber $disk.Number -PartitionNumber $espPart.PartitionNumber -NewDriveLetter $E
+        $winOffset = $winPart.Offset
+        if (Test-Path "${W}:\Windows\System32\DriverStore\FileRepository\r8sufs.inf_*") {
+            $reused = $true
+            Write-Host "==> Reusing $vhd (Windows and drivers already in it)"
+        }
+    }
+    if (-not $reused) {
+        Write-Host "    $vhd is not a finished earlier run: starting over"
+        Dismount-Work
+    }
+}
+if (-not $reused) {
 if (Test-Path $vhd) { Remove-Item $vhd -Force }
 Write-Host "==> 4Kn VHDX $vhd ($([math]::Round($vhdBytes / 1GB, 1)) GB, dynamic)"
 [R8sVhd]::Create4Kn($vhd, $vhdBytes)
@@ -222,8 +248,10 @@ $W = [string]$free[0]; $E = [string]$free[1]
 Set-Partition -DiskNumber $disk.Number -PartitionNumber $winPart.PartitionNumber -NewDriveLetter $W
 Set-Partition -DiskNumber $disk.Number -PartitionNumber $espPart.PartitionNumber -NewDriveLetter $E
 $winOffset = (Get-Partition -DiskNumber $disk.Number -PartitionNumber $winPart.PartitionNumber).Offset
+}
 
 try {
+    if (-not $reused) {
     # ------------------------------------------------------------ 3. Windows
     $img = Mount-DiskImage -ImagePath $Iso -PassThru
     try {
@@ -246,6 +274,7 @@ try {
     Write-Host "==> Adding drivers from $Drivers"
     Add-WindowsDriver -Path "${W}:\" -Driver $Drivers -Recurse -ForceUnsigned -ScratchDirectory $Scratch |
         ForEach-Object { "    " + $_.OriginalFileName }
+    }
 
     # ------------------------------------------------------------ 5. answer file
     Write-Host "==> Answer file (local account '$UserName', password '$Password', signs in by itself)"
@@ -299,9 +328,46 @@ try {
 
     # ------------------------------------------------------------ 6. boot files, BCD at the phone
     Write-Host "==> bcdboot, then the BCD points at the phone's esp/win"
-    $o = bcdboot "${W}:\Windows" /s "${E}:" /f UEFI 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "bcdboot failed: $o" }
     $store = "${E}:\EFI\Microsoft\Boot\BCD"
+    $o = bcdboot "${W}:\Windows" /s "${E}:" /f UEFI 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        # The PC's (x64) bcdboot often can't copy an ARM64 Windows' boot files. Do what it does by hand:
+        # boot files from the image, then a BCD with a boot manager and one Windows entry.
+        Write-Host "    bcdboot: $o"
+        Write-Host "    -> setting up the boot files and BCD by hand"
+        $mb = "${E}:\EFI\Microsoft\Boot"
+        if (Test-Path "${E}:\EFI") { Remove-Item "${E}:\EFI" -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $mb, "${E}:\EFI\Boot" | Out-Null
+        $rc = robocopy "${W}:\Windows\Boot\EFI" $mb /E /R:1 /W:1 /NFL /NDL /NJH /NJS
+        if ($LASTEXITCODE -ge 8) { throw "Copying ${W}:\Windows\Boot\EFI failed ($LASTEXITCODE): $rc" }
+        $rc = robocopy "${W}:\Windows\Boot\Fonts" "$mb\Fonts" /E /R:1 /W:1 /NFL /NDL /NJH /NJS
+        if ($LASTEXITCODE -ge 8) { throw "Copying the boot fonts failed ($LASTEXITCODE): $rc" }
+        if (Test-Path "${W}:\Windows\Boot\Resources") {
+            $rc = robocopy "${W}:\Windows\Boot\Resources" "$mb\Resources" /E /R:1 /W:1 /NFL /NDL /NJH /NJS
+            if ($LASTEXITCODE -ge 8) { throw "Copying the boot resources failed ($LASTEXITCODE): $rc" }
+        }
+        if (-not (Test-Path "$mb\bootmgfw.efi")) { throw "No bootmgfw.efi in ${W}:\Windows\Boot\EFI." }
+        Copy-Item "$mb\bootmgfw.efi" "${E}:\EFI\Boot\bootaa64.efi" -Force
+        if (Test-Path $store) { Remove-Item $store -Force }
+        $bcd = { $r = bcdedit /store $store @args 2>&1; if ($LASTEXITCODE -ne 0) { throw "bcdedit $($args -join ' ') failed: $r" }; "$r" }
+        $r = bcdedit /createstore $store 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "bcdedit /createstore failed: $r" }
+        $null = & $bcd /create "{bootmgr}" /d "Windows Boot Manager"
+        $null = & $bcd /set "{bootmgr}" device "partition=${E}:"
+        $null = & $bcd /set "{bootmgr}" path "\EFI\Microsoft\Boot\bootmgfw.efi"
+        $null = & $bcd /set "{bootmgr}" locale en-US
+        $created = & $bcd /create /d "Windows 11" /application osloader
+        if ($created -notmatch '\{[0-9a-fA-F-]{36}\}') { throw "bcdedit did not return the new entry: $created" }
+        $os = $Matches[0]
+        foreach ($a in @(
+                @("device", "partition=${W}:"), @("osdevice", "partition=${W}:"),
+                @("path", "\Windows\system32\winload.efi"), @("systemroot", "\Windows"),
+                @("locale", "en-US"))) {
+            $null = & $bcd /set $os @a
+        }
+        $null = & $bcd /set "{bootmgr}" default $os
+        $null = & $bcd /set "{bootmgr}" displayorder $os
+    }
     foreach ($a in @(
             @("/set", "{default}", "testsigning", "on"),
             @("/set", "{default}", "nointegritychecks", "on"),
