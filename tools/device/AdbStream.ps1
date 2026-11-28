@@ -14,7 +14,16 @@ function Start-AdbProcess([string]$Mode, [string]$ShellCmd, [switch]$Stdin, [swi
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardInput = [bool]$Stdin
-    return [System.Diagnostics.Process]::Start($psi)
+    if (-not $Stdin) { return [System.Diagnostics.Process]::Start($psi) }
+    # .NET Framework opens the child's stdin with the console's input encoding and, when that
+    # is UTF-8, writes a byte-order mark into the stream at once. Binary data must not get one.
+    $prev = $null
+    try { $prev = [Console]::InputEncoding; [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
+    try {
+        return [System.Diagnostics.Process]::Start($psi)
+    } finally {
+        if ($prev) { try { [Console]::InputEncoding = $prev } catch { } }
+    }
 }
 
 function Format-Size([double]$Bytes) {

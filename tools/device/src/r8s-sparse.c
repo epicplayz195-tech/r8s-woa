@@ -175,7 +175,17 @@ static int cmd_dump(const char *dev) {
 static int cmd_restore(const char *dev) {
     u8 hdr[32], rec[16];
     rd_all(0, hdr, 32);
-    if (!(hdr[0] == 'R' && hdr[1] == '8' && hdr[6] == 'S' && hdr[7] == '1')) fail("input is not an r8s-sparse stream", 0);
+    /* Windows PowerShell 5.1 (.NET Framework) may put a UTF-8 byte-order mark in front of
+       whatever it pipes to a process when the console code page is UTF-8: skip one. */
+    if (hdr[0] == 0xEF && hdr[1] == 0xBB && hdr[2] == 0xBF) {
+        for (int i = 0; i < 29; i++) hdr[i] = hdr[i + 3];
+        rd_all(0, hdr + 29, 3);
+        out(2, "(skipped a UTF-8 BOM in front of the stream)\n");
+    }
+    if (!(hdr[0] == 'R' && hdr[1] == '8' && hdr[6] == 'S' && hdr[7] == '1')) {
+        out(2, "first bytes:"); for (int i = 0; i < 8; i++) { out(2, " "); outhex(2, hdr[i]); } out(2, "\n");
+        fail("input is not an r8s-sparse stream", 0);
+    }
     u64 total = get64(hdr + 8);
     if (get32(hdr + 16) != CHUNK) fail("unexpected chunk size", 0);
     int fd = open_dev(dev, 2);
