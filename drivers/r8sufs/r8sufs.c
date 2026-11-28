@@ -156,6 +156,7 @@ typedef struct _ADAPTER {
     ULONG     Seq;
     ULONG     Errors;
     ULONG     LastResidual;
+    ULONG     GptEntriesCrc;
     ULONG     LastIs;
 } ADAPTER, *PADAPTER;
 
@@ -383,6 +384,21 @@ Exec(PADAPTER A, const UCHAR *Cdb, ULONG CdbLen, ULONG Dir, ULONG Length, PUCHAR
 }
 
 
+static ULONG
+Crc32(const UCHAR *P, ULONG Len, ULONG Crc)
+{
+    ULONG i, b;
+
+    Crc = ~Crc;
+    for (i = 0; i < Len; i++) {
+        Crc ^= P[i];
+        for (b = 0; b < 8; b++) {
+            Crc = (Crc >> 1) ^ (0xEDB88320u & (0u - (Crc & 1)));
+        }
+    }
+    return ~Crc;
+}
+
 /* Internal read of Blocks blocks at Lba into the bounce buffer. */
 static BOOLEAN
 ReadBlocks(PADAPTER A, ULONGLONG Lba, ULONG Blocks)
@@ -428,12 +444,43 @@ ReadGpt(PADAPTER A)
     entLba = Le64(A->Bounce + 72);
     count = Le32(A->Bounce + 80);
     size = Le32(A->Bounce + 84);
+    {
+        ULONG hsize = Le32(A->Bounce + 12), hcrc = Le32(A->Bounce + 16), calc = 0;
+        UCHAR h[512];
+
+        if (hsize >= 92 && hsize <= sizeof(h)) {
+            RtlCopyMemory(h, A->Bounce, hsize);
+            h[16] = h[17] = h[18] = h[19] = 0;
+            calc = Crc32(h, hsize, 0);
+        }
+        Say(A, "[ufs] gpt header: size %u crc %08X calc %08X, my lba %I64u alt %I64u, usable %I64u..%I64u, "
+            "entries lba %I64u count %u size %u crc %08X\r\n", hsize, hcrc, calc, Le64(A->Bounce + 24), Le64(A->Bounce + 32),
+            Le64(A->Bounce + 40), Le64(A->Bounce + 48), entLba, count, size, Le32(A->Bounce + 88));
+        A->GptEntriesCrc = Le32(A->Bounce + 88);
+    }
     if (size != 128 || count == 0 || count > 256) {
         return;
     }
     blocks = (count * size + A->BlockSize - 1) / A->BlockSize;
-    if (blocks * A->BlockSize > MAX_TRANSFER || !ReadBlocks(A, entLba, blocks)) {
-        return;
+    /* Entries one block at a time (one PRD each), then in one multi-PRD read: both must match the header. */
+    {
+        ULONG c1 = 0, c2, b, left = count * size;
+
+        for (b = 0; b < blocks; b++) {
+            ULONG n = left < A->BlockSize ? left : A->BlockSize;
+            if (!ReadBlocks(A, entLba + b, 1)) {
+                break;
+            }
+            c1 = Crc32(A->Bounce, n, c1);
+            left -= n;
+        }
+        if (blocks * A->BlockSize > MAX_TRANSFER || !ReadBlocks(A, entLba, blocks)) {
+            Say(A, "[ufs] gpt: multi-block read of the entries failed, ocs %X\r\n", A->LastOcs);
+            return;
+        }
+        c2 = Crc32(A->Bounce, count * size, 0);
+        Say(A, "[ufs] gpt entries crc: header %08X, block by block %08X, one %u-block read %08X%s\r\n",
+            A->GptEntriesCrc, c1, blocks, c2, (c1 == A->GptEntriesCrc && c2 == A->GptEntriesCrc) ? " (all good)" : " MISMATCH");
     }
     for (i = 0; i < count && A->RangeCount < MAX_RANGES; i++) {
         const UCHAR *e = A->Bounce + i * size;
@@ -625,6 +672,7 @@ DoScsiInner(PADAPTER A, PSCSI_REQUEST_BLOCK Srb)
     if (len != 0) {
         if (Srb->SrbFlags & SRB_FLAGS_DATA_IN) {
             dir = UTRD_DD_IN;
+            RtlZeroMemory(A->Bounce, len);   /* a short answer reads as zeros, not stale data */
         } else if (Srb->SrbFlags & SRB_FLAGS_DATA_OUT) {
             dir = UTRD_DD_OUT;
             RtlCopyMemory(A->Bounce, Srb->DataBuffer, len);
@@ -634,15 +682,11 @@ DoScsiInner(PADAPTER A, PSCSI_REQUEST_BLOCK Srb)
     r = Exec(A, cdb, Srb->CdbLength, dir, len, &st, &res);
     switch (r) {
     case EXEC_OK:
+        /* The residual this controller reports is not usable (INQUIRY len 64 reports 192 left,
+         * READ CAPACITY(16) len 32 reports 32 left yet returns the data), so it is ignored:
+         * the whole buffer is returned, zero-padded. */
         if (dir == UTRD_DD_IN) {
-            ULONG got = res < len ? len - res : 0;
-            RtlCopyMemory(Srb->DataBuffer, A->Bounce, got);
-            if (got < len) {
-                Srb->DataTransferLength = got;
-                Srb->SrbStatus = SRB_STATUS_DATA_OVERRUN;   /* = underrun for Storport */
-                Srb->ScsiStatus = SCSISTAT_GOOD;
-                return;
-            }
+            RtlCopyMemory(Srb->DataBuffer, A->Bounce, len);
         }
         Srb->SrbStatus = SRB_STATUS_SUCCESS;
         Srb->ScsiStatus = SCSISTAT_GOOD;
@@ -669,6 +713,14 @@ DoScsiInner(PADAPTER A, PSCSI_REQUEST_BLOCK Srb)
         return;
 
     default:
+        /* Controller-level failure (seen: OCS 7 on MODE SENSE len 192, READ CAPACITY(16) len 64).
+         * For anything but a data transfer, answer ILLEGAL REQUEST so the class driver falls back
+         * at once instead of retrying. */
+        if (cdb[0] != OP_READ6 && cdb[0] != OP_READ10 && cdb[0] != OP_READ16 &&
+            cdb[0] != OP_WRITE10 && cdb[0] != OP_WRITE16) {
+            SetSense(Srb, SCSI_SENSE_ILLEGAL_REQUEST, SCSI_ADSENSE_INVALID_CDB, 0);
+            return;
+        }
         Srb->SrbStatus = SRB_STATUS_ERROR;
         return;
     }

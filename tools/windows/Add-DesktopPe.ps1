@@ -117,6 +117,9 @@ if exist S:\ (
   echo [ufs] no S: drive, write test skipped >> %LOG%
 )
 echo [ufs] test done >> %LOG%
+echo [ufs] diskpart, read-only: san policy, disk state, partitions (last: it may hang) >> %LOG%
+diskpart /s X:\r8s\ufs-list.txt >> %LOG% 2>&1
+echo [ufs] diskpart done >> %LOG%
 :loop
 echo [touch] %TIME% >> %LOG%
 reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\RWOA0003\0\Device Parameters" >> %LOG% 2>&1
@@ -124,7 +127,7 @@ ping -n 31 127.0.0.1 > nul
 goto loop
 '@
         [IO.File]::WriteAllText((Join-Path $mount "r8s\install-drivers.cmd"), ($cmd -replace "`r?`n", "`r`n"), [Text.Encoding]::ASCII)
-        $ufsList = "list disk`r`nselect disk 0`r`ndetail disk`r`nlist partition`r`nlist volume`r`n"
+        $ufsList = "san`r`nlist disk`r`nselect disk 0`r`ndetail disk`r`nattributes disk`r`nlist partition`r`nlist volume`r`n"
         [IO.File]::WriteAllText((Join-Path $mount "r8s\ufs-list.txt"), $ufsList, [Text.Encoding]::ASCII)
 
         # Disks online whatever their bus (WinPE's default SAN policy takes "shared bus" disks offline).
