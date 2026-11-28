@@ -158,6 +158,10 @@ typedef struct _ADAPTER {
     ULONG     LastResidual;
     ULONG     GptEntriesCrc;
     ULONG     GptFixes;
+    BOOLEAN   GptHide;              /* entries are presented with the Android partitions hidden */
+    ULONG     GptHiddenCrc;         /* entries CRC with that done */
+    ULONG     GptEntrySize, GptEntryCount;
+    ULONGLONG GptEntLba, GptAltEntLba, GptEntBlocks;
     ULONG     LastIs;
 } ADAPTER, *PADAPTER;
 
@@ -413,6 +417,52 @@ ReadBlocks(PADAPTER A, ULONGLONG Lba, ULONG Blocks)
 }
 
 /* Find the esp and win partitions: the only places writes may go. */
+static BOOLEAN
+NameIs(const UCHAR *E, const char *N)
+{
+    const UCHAR *name = E + 56;             /* UTF-16LE, 36 chars */
+    ULONG i;
+
+    for (i = 0; N[i]; i++) {
+        if (name[2 * i] != (UCHAR)N[i] || name[2 * i + 1] != 0) {
+            return FALSE;
+        }
+    }
+    return name[2 * i] == 0 && name[2 * i + 1] == 0;
+}
+
+/*
+ * Every Android partition is "basic data", so Windows mounts all ~30 of them and gives them
+ * drive letters (and offers to format them). For Windows they are presented with the GPT
+ * basic-data attributes read-only (60), hidden (62) and no drive letter (63). Only esp and win
+ * stay as they are. Nothing on the device changes.
+ */
+#define GPT_ATTR_HIDE       ((1ULL << 60) | (1ULL << 62) | (1ULL << 63))
+
+static VOID
+HideEntries(PADAPTER A, PUCHAR P, ULONG Bytes)
+{
+    ULONG i;
+
+    for (i = 0; i + A->GptEntrySize <= Bytes; i += A->GptEntrySize) {
+        PUCHAR e = P + i;
+        ULONGLONG attr;
+        ULONG k;
+        BOOLEAN used = FALSE;
+
+        for (k = 0; k < 16; k++) {
+            used |= e[k] != 0;
+        }
+        if (!used || NameIs(e, "esp") || NameIs(e, "win")) {
+            continue;
+        }
+        attr = Le64(e + 48) | GPT_ATTR_HIDE;
+        for (k = 0; k < 8; k++) {
+            e[48 + k] = (UCHAR)(attr >> (8 * k));
+        }
+    }
+}
+
 static VOID
 ReadGpt(PADAPTER A)
 {
@@ -458,6 +508,7 @@ ReadGpt(PADAPTER A)
             "entries lba %I64u count %u size %u crc %08X\r\n", hsize, hcrc, calc, Le64(A->Bounce + 24), Le64(A->Bounce + 32),
             Le64(A->Bounce + 40), Le64(A->Bounce + 48), entLba, count, size, Le32(A->Bounce + 88));
         A->GptEntriesCrc = Le32(A->Bounce + 88);
+        A->GptAltEntLba = Le64(A->Bounce + 32);     /* alt header; its entries just before it */
     }
     if (size != 128 || count == 0 || count > 256) {
         return;
@@ -482,6 +533,22 @@ ReadGpt(PADAPTER A)
         c2 = Crc32(A->Bounce, count * size, 0);
         Say(A, "[ufs] gpt entries crc: header %08X, block by block %08X, one %u-block read %08X%s\r\n",
             A->GptEntriesCrc, c1, blocks, c2, (c1 == A->GptEntriesCrc && c2 == A->GptEntriesCrc) ? " (all good)" : " MISMATCH");
+        if (c2 == A->GptEntriesCrc && count * size == blocks * A->BlockSize) {
+            /* Hide the Android partitions from Windows (see HideEntries), on a copy. */
+            A->GptEntrySize = size;
+            A->GptEntryCount = count;
+            A->GptEntLba = entLba;
+            A->GptEntBlocks = blocks;
+            A->GptAltEntLba -= blocks;
+            HideEntries(A, A->Bounce, count * size);
+            A->GptHiddenCrc = Crc32(A->Bounce, count * size, 0);
+            A->GptHide = TRUE;
+            Say(A, "[ufs] gpt: Android partitions hidden from Windows, entries at %I64u and %I64u, crc %08X\r\n",
+                A->GptEntLba, A->GptAltEntLba, A->GptHiddenCrc);
+            if (!ReadBlocks(A, entLba, blocks)) {  /* the real entries back for the range scan */
+                return;
+            }
+        }
     }
     for (i = 0; i < count && A->RangeCount < MAX_RANGES; i++) {
         const UCHAR *e = A->Bounce + i * size;
@@ -617,15 +684,28 @@ FixGptHeaders(PADAPTER A, const UCHAR *Cdb, ULONG Len)
           Cdb[0] == OP_READ10 ? Be32(Cdb + 2) :
           (((ULONG)Cdb[1] & 0x1F) << 16) | ((ULONG)Cdb[2] << 8) | Cdb[3];
     blocks = Len / A->BlockSize;
+    if (A->GptHide) {
+        for (i = 0; i < blocks; i++) {
+            ULONGLONG b = lba + i;
+
+            if ((b >= A->GptEntLba && b < A->GptEntLba + A->GptEntBlocks) ||
+                (b >= A->GptAltEntLba && b < A->GptAltEntLba + A->GptEntBlocks)) {
+                HideEntries(A, A->Bounce + i * A->BlockSize, A->BlockSize);
+            }
+        }
+    }
     for (i = 0; i < blocks; i++) {
         PUCHAR h = A->Bounce + i * A->BlockSize;
         ULONG size, crc;
+        BOOLEAN hide;
 
         if (RtlCompareMemory(h, "EFI PART", 8) != 8 || Le64(h + 24) != lba + i) {
             continue;                       /* not a header, or not the one for this block */
         }
         size = Le32(h + 12);
-        if (size == 92 || size < 92 || size > A->BlockSize) {
+        hide = A->GptHide && Le32(h + 88) == A->GptEntriesCrc && Le32(h + 80) == A->GptEntryCount &&
+               Le32(h + 84) == A->GptEntrySize;
+        if ((size == 92 && !hide) || size < 92 || size > A->BlockSize) {
             continue;
         }
         crc = Le32(h + 16);
@@ -635,10 +715,15 @@ FixGptHeaders(PADAPTER A, const UCHAR *Cdb, ULONG Len)
             continue;
         }
         h[12] = 92; h[13] = h[14] = h[15] = 0;
+        if (hide) {
+            h[88] = (UCHAR)A->GptHiddenCrc; h[89] = (UCHAR)(A->GptHiddenCrc >> 8);
+            h[90] = (UCHAR)(A->GptHiddenCrc >> 16); h[91] = (UCHAR)(A->GptHiddenCrc >> 24);
+        }
         crc = Crc32(h, 92, 0);
         h[16] = (UCHAR)crc; h[17] = (UCHAR)(crc >> 8); h[18] = (UCHAR)(crc >> 16); h[19] = (UCHAR)(crc >> 24);
         if (A->GptFixes++ < 8) {
-            Say(A, "[ufs] GPT header at lba %I64u: HeaderSize %u -> 92 for Windows (crc %08X)\r\n", lba + i, size, crc);
+            Say(A, "[ufs] GPT header at lba %I64u: HeaderSize %u -> 92%s for Windows (crc %08X)\r\n", lba + i, size,
+                hide ? ", Android partitions hidden" : "", crc);
         }
     }
 }
