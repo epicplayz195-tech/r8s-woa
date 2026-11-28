@@ -313,10 +313,33 @@ try {
         Dismount-DiskImage -ImagePath $Iso | Out-Null
     }
 
-    # ------------------------------------------------------------ 4. drivers
+    }
+
+    # ------------------------------------------------------------ 4. drivers (again with -Reuse: newer
+    # packages win, PnP takes the newest driver version)
     Write-Host "==> Adding drivers from $Drivers"
     Add-WindowsDriver -Path "${W}:\" -Driver $Drivers -Recurse -ForceUnsigned -ScratchDirectory $Scratch |
         ForEach-Object { "    " + $_.OriginalFileName }
+
+    # ------------------------------------------------------------ 4b. settings in the image's registry
+    # No hibernation / fast startup (it would power off through PSCI, which Samsung's firmware
+    # lacks) and no crash dump (the UFS driver has no dump mode: the blue screen would hang).
+    Write-Host "==> No hibernation, no fast startup, no crash dump"
+    $r = reg load HKLM\R8S_SYS "${W}:\Windows\System32\config\SYSTEM" 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "reg load of the image's SYSTEM hive failed: $r" }
+    try {
+        foreach ($v in @(
+                @("ControlSet001\Control\Power", "HibernateEnabled", "0"),
+                @("ControlSet001\Control\Power", "HibernateEnabledDefault", "0"),
+                @("ControlSet001\Control\Session Manager\Power", "HiberbootEnabled", "0"),
+                @("ControlSet001\Control\CrashControl", "CrashDumpEnabled", "0"),
+                @("ControlSet001\Control\CrashControl", "AutoReboot", "1"))) {
+            $r = reg add "HKLM\R8S_SYS\$($v[0])" /v $v[1] /t REG_DWORD /d $v[2] /f 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "reg add $($v -join ' ') failed: $r" }
+        }
+    } finally {
+        [gc]::Collect(); Start-Sleep -Seconds 1
+        $null = reg unload HKLM\R8S_SYS 2>&1
     }
 
     # ------------------------------------------------------------ 5. answer file

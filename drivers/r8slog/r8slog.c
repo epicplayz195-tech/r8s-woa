@@ -32,6 +32,21 @@
 #define INBOX_DATA     (INBOX_SIZE - INBOX_HDR)
 #define INBOX_MAGIC    0x49534655u                /* "UFSI" */
 
+/*
+ * Restart. Samsung's EL3 firmware answers PSCI SYSTEM_RESET with NOT_SUPPORTED, so Windows'
+ * own restart ends in INTERNAL_POWER_ERROR (0xA0, 0xBEEF, ..., 0x84000009, -1). Android and the
+ * UEFI restart through the PMU instead; so does this driver: from a last-chance shutdown
+ * notification (file systems flushed, just before the HAL's PSCI call), and 15 s after a
+ * bugcheck. As Mu-Silicium S5E9830 ResetSystemLib ResetCold().
+ */
+#define PMU_BASE                 0x15860000ULL
+#define PMU_SIZE                 0x4000
+#define PMU_RST_STAT             0x0404
+#define PMU_SEC_DEBUG_MAGIC      0x0808
+#define PMU_SWRESET              0x3A00
+#define SEC_REBOOT_NORMAL        0x4E
+#define SEC_REBOOT_END_OFFSET    16
+
 typedef struct _WINLOG_HEADER {
     ULONG64 Magic;
     ULONG   Length;       /* bytes of text after the header */
@@ -70,9 +85,11 @@ EVT_WDF_IO_QUEUE_IO_WRITE           R8sLogWrite;
 EVT_WDF_IO_QUEUE_IO_READ            R8sLogRead;
 EVT_WDF_TIMER                       R8sLogTimer;
 EVT_WDF_WORKITEM                    R8sLogMirrorFile;
+EVT_WDFDEVICE_WDM_IRP_PREPROCESS    R8sLogShutdown;
 KBUGCHECK_CALLBACK_ROUTINE          R8sLogBugCheck;
 
 static DEVICE_CONTEXT *gCtx;           /* for the bugcheck callback */
+static volatile ULONG *gPmu;           /* PMU registers, for the restart */
 static ULONG_PTR      *gBugCheckData;  /* ntoskrnl's KiBugCheckData, if exported */
 
 /* --- raw log access (no locking; callers serialise) ------------------- */
@@ -192,6 +209,25 @@ AppendLine(DEVICE_CONTEXT *Ctx, const char *Text, BOOLEAN Locked)
     }
 }
 
+static void
+PmuReset(void)
+{
+    volatile ULONG *Pmu = gPmu;
+    ULONG          V;
+
+    if (Pmu == NULL) {
+        return;
+    }
+    V = Pmu[PMU_SEC_DEBUG_MAGIC / 4];
+    V &= ~(0xFFu << SEC_REBOOT_END_OFFSET);
+    V |= (ULONG)SEC_REBOOT_NORMAL << SEC_REBOOT_END_OFFSET;
+    Pmu[PMU_SEC_DEBUG_MAGIC / 4] = V;           /* a normal restart, not a panic (no upload mode) */
+    Pmu[PMU_RST_STAT / 4] = 0;
+    KeMemoryBarrier();
+    Pmu[PMU_SWRESET / 4] = Pmu[PMU_SWRESET / 4] | 2;
+    KeStallExecutionProcessor(1000000);
+}
+
 /* --- driver ------------------------------------------------------------ */
 
 NTSTATUS
@@ -228,6 +264,11 @@ R8sLogDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
         return Status;
     }
 
+    Status = WdfDeviceInitAssignWdmIrpPreprocessCallback(DeviceInit, R8sLogShutdown, IRP_MJ_SHUTDOWN, NULL, 0);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&Pnp);
     Pnp.EvtDevicePrepareHardware = R8sLogPrepareHardware;
     Pnp.EvtDeviceReleaseHardware = R8sLogReleaseHardware;
@@ -241,6 +282,14 @@ R8sLogDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
 
     Ctx = GetContext(Device);
     RtlZeroMemory(Ctx, sizeof(*Ctx));
+
+    if (gPmu == NULL) {
+        PHYSICAL_ADDRESS Pa;
+
+        Pa.QuadPart = (LONGLONG)PMU_BASE;
+        gPmu = (volatile ULONG *)MmMapIoSpaceEx(Pa, PMU_SIZE, PAGE_READWRITE | PAGE_NOCACHE);
+    }
+    (VOID)IoRegisterLastChanceShutdownNotification(WdfDeviceWdmGetDeviceObject(Device));
 
     WDF_OBJECT_ATTRIBUTES_INIT(&Attr);
     Attr.ParentObject = Device;
@@ -493,9 +542,32 @@ R8sLogBugCheck(_In_ PVOID Buffer, _In_ ULONG Length)
         }
     }
 
-    P = PutStr(P, End, "\r\n");
+    P = PutStr(P, End, "\r\n[r8slog] restarting through the PMU in 15 s\r\n");
     *P = '\0';
     AppendLine(Ctx, Line, FALSE);
+
+    /* Windows would restart with PSCI SYSTEM_RESET, which this firmware lacks: the screen would
+     * stay up forever. Leave the stop code on screen for a while, then restart. */
+    for (i = 0; i < 150; i++) {
+        KeStallExecutionProcessor(100000);
+    }
+    PmuReset();
+}
+
+/* Last-chance shutdown (restart or shut down): file systems are flushed, next the HAL would call
+ * PSCI SYSTEM_RESET / SYSTEM_OFF, which Samsung's firmware does not have. Restart through the PMU.
+ * (A shut down restarts too, for now: the PMIC power-off sequence isn't done here.) */
+NTSTATUS
+R8sLogShutdown(_In_ WDFDEVICE Device, _Inout_ PIRP Irp)
+{
+    DEVICE_CONTEXT *Ctx = GetContext(Device);
+
+    AppendLine(Ctx, "\r\n[r8slog] shutdown: restarting through the PMU (no PSCI SYSTEM_RESET here)\r\n", TRUE);
+    PmuReset();
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return STATUS_SUCCESS;
 }
 
 VOID
