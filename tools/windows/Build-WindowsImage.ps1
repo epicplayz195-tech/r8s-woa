@@ -470,6 +470,8 @@ try {
     $r = reg load HKLM\R8S_BCDO $ob 2>&1
     if ($LASTEXITCODE -ne 0) { throw "reg load of the saved BCD failed: $r" }
     try {
+        # The system-store flags again, here: the BCD API drops them when it rewrites the store.
+        [R8sReg]::MarkSystemStore("R8S_BCDO")
         $r = reg save HKLM\R8S_BCDO "$ob.clean" /y 2>&1
         if ($LASTEXITCODE -ne 0) { throw "reg save of the BCD failed: $r" }
     } finally {
