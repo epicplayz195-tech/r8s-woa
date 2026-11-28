@@ -102,14 +102,16 @@ rem The disk test, in order (each step is logged before it starts, so a hang sho
 echo [ufs] storage adapters and disks Windows has >> %LOG%
 pnputil /enum-devices /class SCSIAdapter >> %LOG% 2>&1
 pnputil /enum-devices /class DiskDrive >> %LOG% 2>&1
-echo [ufs] disks seen through r8sufs, diskpart >> %LOG%
-diskpart /s X:\r8s\ufs-list.txt >> %LOG% 2>&1
+echo [ufs] volumes Windows found >> %LOG%
+mountvol >> %LOG% 2>&1
 echo [ufs] mount the esp as S: and read it >> %LOG%
 mountvol S: /S >> %LOG% 2>&1
 dir S:\ >> %LOG% 2>&1
 echo [ufs] write test, the esp is one of the two writable partitions >> %LOG%
 echo r8sufs write test %DATE% %TIME% > S:\r8s-ufs-write-test.txt
 type S:\r8s-ufs-write-test.txt >> %LOG% 2>&1
+echo [ufs] disks seen through r8sufs, diskpart, last: it may hang >> %LOG%
+diskpart /s X:\r8s\ufs-list.txt >> %LOG% 2>&1
 echo [ufs] test done >> %LOG%
 :loop
 echo [touch] %TIME% >> %LOG%

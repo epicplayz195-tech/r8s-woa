@@ -27,6 +27,7 @@
 
 #include <ntddk.h>
 #include <storport.h>
+#include <ntstrsafe.h>
 
 /* ---------------------------------------------------------------- controller */
 
@@ -131,6 +132,20 @@ typedef struct _RANGE {
     ULONGLONG First, Last;      /* inclusive, logical blocks */
 } RANGE;
 
+/* One line of the command log (see LogWork). */
+typedef enum { R_OK, R_UNDERRUN, R_CHECK, R_TIMEOUT, R_FAILED, R_REFUSED, R_LOCAL, R_GPT } LOG_RESULT;
+
+typedef struct _LOG_REC {
+    UCHAR     Op, Result, ScsiStatus, SenseKey, Asc, Ascq, Ocs, Pad;
+    ULONG     Len;
+    ULONGLONG Lba;
+    ULONG     Blocks;
+    ULONG     Micros;
+} LOG_REC;
+
+#define LOG_RING            256
+#define LOG_ALL_FIRST       400             /* every command until then, afterwards only errors */
+
 typedef struct _ADAPTER {
     PUCHAR    Hci;
     PUCHAR    Uncached;
@@ -146,6 +161,14 @@ typedef struct _ADAPTER {
     ULONG     RangeCount;
     RANGE     Range[MAX_RANGES];
     UCHAR     LastResponse[64];
+    UCHAR     LastOcs;
+    PVOID     Worker;
+    volatile LONG WorkPending;
+    volatile LONG LogHead;          /* records written by HwStartIo */
+    LONG      LogTail;              /* records written to the file by LogWork */
+    ULONG     Seq;
+    ULONG     Errors;
+    LOG_REC   Log[LOG_RING];
 } ADAPTER, *PADAPTER;
 
 static ULONG Rd(PADAPTER A, ULONG Off) { return StorPortReadRegisterUlong(A, (PULONG)(A->Hci + Off)); }
@@ -281,6 +304,7 @@ Exec(PADAPTER A, const UCHAR *Cdb, ULONG CdbLen, ULONG Dir, ULONG Length, PUCHAR
     MemoryBarrier();
 
     RtlCopyMemory(A->LastResponse, u->Response, sizeof(A->LastResponse));
+    A->LastOcs = (UCHAR)(t->Dw2 & 0xF);
     if ((t->Dw2 & 0xF) != OCS_SUCCESS || u->Response[0] != UPIU_RESPONSE || u->Response[6] != 0) {
         return EXEC_FAILED;
     }
@@ -290,6 +314,9 @@ Exec(PADAPTER A, const UCHAR *Cdb, ULONG CdbLen, ULONG Dir, ULONG Length, PUCHAR
     UNREFERENCED_PARAMETER(segLen);
     return *ScsiStatus == SCSISTAT_GOOD ? EXEC_OK : EXEC_CHECK;
 }
+
+static VOID Record(PADAPTER A, const UCHAR *Cdb, ULONG Len, UCHAR Result, UCHAR ScsiStatus, const UCHAR *Sense, ULONG Us);
+VOID LogWork(PVOID DeviceExtension, PVOID Context, PVOID Worker);
 
 /* Internal read of Blocks blocks at Lba into the bounce buffer. */
 static BOOLEAN
@@ -346,6 +373,8 @@ ReadGpt(PADAPTER A)
             A->RangeCount++;
         }
     }
+    Record(A, NULL, A->BlockSize, R_GPT, 0, NULL, 0);
+    A->Log[(A->LogHead - 1) % LOG_RING].Blocks = A->RangeCount;
 }
 
 static BOOLEAN
@@ -362,6 +391,122 @@ WriteAllowed(PADAPTER A, ULONGLONG Lba, ULONGLONG Blocks)
         }
     }
     return FALSE;
+}
+
+/* ---------------------------------------------------------------- command log */
+
+static PCSTR
+ResultName(UCHAR R)
+{
+    switch (R) {
+    case R_OK:       return "ok";
+    case R_UNDERRUN: return "ok (short)";
+    case R_CHECK:    return "CHECK CONDITION";
+    case R_TIMEOUT:  return "TIMEOUT";
+    case R_FAILED:   return "FAILED";
+    case R_REFUSED:  return "refused (write protect / not allowed)";
+    case R_LOCAL:    return "answered locally";
+    default:         return "gpt";
+    }
+}
+
+/* PASSIVE_LEVEL (Storport work item): append the new records to \SystemRoot\r8s-log.txt,
+ * which r8slog.sys mirrors into the RAM log the firmware saves after a restart. */
+VOID
+LogWork(PVOID DeviceExtension, PVOID Context, PVOID Worker)
+{
+    PADAPTER a = (PADAPTER)DeviceExtension;
+    UNICODE_STRING path;
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK io;
+    HANDLE h;
+    CHAR line[200];
+    LONG head;
+
+    UNREFERENCED_PARAMETER(Context);
+    UNREFERENCED_PARAMETER(Worker);
+
+    RtlInitUnicodeString(&path, L"\\SystemRoot\\r8s-log.txt");
+    InitializeObjectAttributes(&oa, &path, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    if (NT_SUCCESS(ZwCreateFile(&h, FILE_APPEND_DATA | SYNCHRONIZE, &oa, &io, NULL, FILE_ATTRIBUTE_NORMAL,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN_IF,
+                                FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0))) {
+        head = a->LogHead;
+        if (head - a->LogTail > LOG_RING) {
+            a->LogTail = head - LOG_RING;
+        }
+        while (a->LogTail < head) {
+            const LOG_REC *r = &a->Log[a->LogTail % LOG_RING];
+            size_t n;
+
+            if (r->Result == R_GPT) {
+                RtlStringCbPrintfA(line, sizeof(line), "[ufs] block size %u, writable GPT ranges (esp/win): %u\r\n",
+                                   r->Len, r->Blocks);
+            } else {
+                RtlStringCbPrintfA(line, sizeof(line),
+                                   "[ufs] #%u op %02X lba %I64u n %u len %u -> %s st %02X sense %X/%02X/%02X ocs %X %u us\r\n",
+                                   (ULONG)a->LogTail + 1, r->Op, r->Lba, r->Blocks, r->Len, ResultName(r->Result),
+                                   r->ScsiStatus, r->SenseKey, r->Asc, r->Ascq, r->Ocs, r->Micros);
+            }
+            if (NT_SUCCESS(RtlStringCbLengthA(line, sizeof(line), &n))) {
+                (VOID)ZwWriteFile(h, NULL, NULL, NULL, &io, line, (ULONG)n, NULL, NULL);
+            }
+            a->LogTail++;
+        }
+        ZwClose(h);
+    }
+    InterlockedExchange(&a->WorkPending, 0);
+}
+
+static VOID
+Record(PADAPTER A, const UCHAR *Cdb, ULONG Len, UCHAR Result, UCHAR ScsiStatus, const UCHAR *Sense, ULONG Us)
+{
+    LOG_REC *r;
+    BOOLEAN error = Result == R_CHECK || Result == R_TIMEOUT || Result == R_FAILED || Result == R_REFUSED;
+
+    A->Seq++;
+    if (error) {
+        A->Errors++;
+    }
+    if (A->Seq > LOG_ALL_FIRST && !error && Result != R_GPT) {
+        return;
+    }
+    r = &A->Log[A->LogHead % LOG_RING];
+    RtlZeroMemory(r, sizeof(*r));
+    r->Op = Cdb ? Cdb[0] : 0;
+    r->Result = Result;
+    r->ScsiStatus = ScsiStatus;
+    r->Len = Len;
+    r->Micros = Us;
+    r->Ocs = A->LastOcs;
+    if (Cdb != NULL) {
+        switch (Cdb[0]) {
+        case OP_READ10: case OP_WRITE10: case OP_VERIFY10:
+            r->Lba = Be32(Cdb + 2); r->Blocks = Be16(Cdb + 7); break;
+        case OP_READ16: case OP_WRITE16: case OP_VERIFY16:
+            r->Lba = Be64(Cdb + 2); r->Blocks = Be32(Cdb + 10); break;
+        default:
+            break;
+        }
+    }
+    if (Sense != NULL) {                    /* fixed-format sense */
+        r->SenseKey = Sense[2] & 0xF;
+        r->Asc = Sense[12];
+        r->Ascq = Sense[13];
+    }
+    InterlockedIncrement(&A->LogHead);
+    if (A->Worker != NULL && InterlockedCompareExchange(&A->WorkPending, 1, 0) == 0) {
+        StorPortQueueWorkItem(A, LogWork, A->Worker, NULL);
+    }
+}
+
+static ULONG
+Micros(PADAPTER A, LARGE_INTEGER Start)
+{
+    LARGE_INTEGER now, freq;
+
+    StorPortQueryPerformanceCounter(A, &freq, &now);
+    return freq.QuadPart ? (ULONG)((now.QuadPart - Start.QuadPart) * 1000000 / freq.QuadPart) : 0;
 }
 
 /* ---------------------------------------------------------------- SRBs */
@@ -385,7 +530,7 @@ SetSense(PSCSI_REQUEST_BLOCK Srb, UCHAR Key, UCHAR Asc, UCHAR Ascq)
 }
 
 static VOID
-DoScsi(PADAPTER A, PSCSI_REQUEST_BLOCK Srb)
+DoScsiInner(PADAPTER A, PSCSI_REQUEST_BLOCK Srb)
 {
     const UCHAR *cdb = Srb->Cdb;
     ULONG len = Srb->DataTransferLength;
@@ -508,6 +653,38 @@ DoScsi(PADAPTER A, PSCSI_REQUEST_BLOCK Srb)
         Srb->SrbStatus = SRB_STATUS_ERROR;
         return;
     }
+}
+
+/* Every SCSI request, timed and logged. */
+static VOID
+DoScsi(PADAPTER A, PSCSI_REQUEST_BLOCK Srb)
+{
+    LARGE_INTEGER t0;
+    UCHAR st, res, op = Srb->Cdb[0];
+    const UCHAR *sense = NULL;
+
+    StorPortQueryPerformanceCounter(A, NULL, &t0);
+    DoScsiInner(A, Srb);
+    st = SRB_STATUS(Srb->SrbStatus);
+    if (st == SRB_STATUS_SELECTION_TIMEOUT) {
+        return;                             /* not LUN 0: not interesting */
+    }
+    if ((Srb->SrbStatus & SRB_STATUS_AUTOSENSE_VALID) && Srb->SenseInfoBuffer != NULL && Srb->SenseInfoBufferLength >= 14) {
+        sense = (const UCHAR *)Srb->SenseInfoBuffer;
+    }
+    if (st == SRB_STATUS_SUCCESS) {
+        res = (op == OP_START_STOP || op == OP_VERIFY10 || op == OP_VERIFY16 || op == OP_UNMAP || op == OP_REPORT_LUNS) ? R_LOCAL : R_OK;
+    } else if (st == SRB_STATUS_DATA_OVERRUN) {
+        res = R_UNDERRUN;
+    } else if (st == SRB_STATUS_TIMEOUT) {
+        res = R_TIMEOUT;
+    } else if (st == SRB_STATUS_ERROR && Srb->ScsiStatus == SCSISTAT_CHECK_CONDITION) {
+        res = (sense != NULL && ((sense[2] & 0xF) == SCSI_SENSE_DATA_PROTECT ||
+               ((sense[2] & 0xF) == SCSI_SENSE_ILLEGAL_REQUEST && sense[12] == SCSI_ADSENSE_ILLEGAL_COMMAND))) ? R_REFUSED : R_CHECK;
+    } else {
+        res = R_FAILED;
+    }
+    Record(A, Srb->Cdb, Srb->DataTransferLength, res, Srb->ScsiStatus, sense, Micros(A, t0));
 }
 
 /* ---------------------------------------------------------------- Storport entry points */
@@ -680,6 +857,10 @@ HwFindAdapter(PVOID DeviceExtension, PVOID HwContext, PVOID BusInformation, PCHA
     a->Ucd = (UCD *)(a->Uncached + OFF_UCD);
     a->Bounce = a->Uncached + OFF_BOUNCE;
     a->BlockSize = 4096;
+    if (StorPortInitializeWorker(a, &a->Worker) != STOR_STATUS_SUCCESS) {
+        a->Worker = NULL;                   /* no command log, everything else works */
+    }
+    Note(a, "LogWorker", a->Worker != NULL);
 
     /* Take the controller over here, at PASSIVE_LEVEL, so the outcome can be noted. */
     Note(a, "TakeOver", TakeOver(a) ? 1 : 0);
